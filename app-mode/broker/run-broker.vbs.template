@@ -1,0 +1,4 @@
+' xdr-broker hidden launcher — started via the Startup shortcut created by
+' setup-vencord.ps1. Node + broker paths are substituted with full quoting
+' (node usually lives under "C:\Program Files", so quotes are NOT optional).
+CreateObject("Wscript.Shell").Run """NODE_EXE_PATH"" ""BROKER_JS_PATH""", 0, False

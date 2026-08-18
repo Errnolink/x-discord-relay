@@ -1,0 +1,12 @@
+Thumbs.db
+desktop.ini
+.DS_Store
+*.log
+node_modules/
+*.lnk
+
+# Vencord source clone + built payload (setup.mjs manages it)
+app-mode/vencord/
+
+# generated per-machine launcher (contains local absolute paths)
+app-mode/broker/run-broker.vbs
