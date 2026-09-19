@@ -2,7 +2,7 @@
 
 Relay any X/Twitter post to a Discord channel **as your own account, through the real Discord client** — no bot, no webhook, no user token, no Discord API calls. Post links are auto-converted to `fixupx.com` so videos and images embed properly.
 
-An X-native send bar appears under every post on x.com: pick server + channel, choose ping presets, one click sends. Two transports:
+An X-native send bar appears when you hover a post on x.com (and stays visible on a post's own page): pick server + channel, choose ping presets, one click sends. Two transports:
 
 - **Tab mode** *(default)* — a `discord.com` browser tab does the sending, driven like a human: navigate → paste → submit → back.
 - **App mode** — the Discord **desktop app** does the sending via a tiny Vencord plugin, with no browser tab open at all.
@@ -27,7 +27,7 @@ An X-native send bar appears under every post on x.com: pick server + channel, c
 
 1. Install Tampermonkey, then create a new userscript and paste in [`userscript/x-discord-relay.user.js`](userscript/x-discord-relay.user.js).
 2. Open `discord.com` in a normal browser tab and click into any channel.
-3. Open `x.com` — every post now has a send bar under it.
+3. Open `x.com` — hovering any post now reveals a send bar under it (always visible on a post's own page).
 
 Pick a server + channel on the bar (the list is built from channels you've recently visited in the Discord tab), press **Send**. The link lands in that channel as you, converted to `fixupx.com` for proper embeds. Done.
 
@@ -41,7 +41,7 @@ App mode sends through the **Discord desktop app** instead of a browser tab, via
 
 ```
 x.com (userscript, App mode)              Discord desktop app
-[💬/🖥 mode chip]                          [xdrRelay Vencord plugin]
+[mode chip]                               [xdrRelay Vencord plugin]
       │  GM_xmlhttpRequest                       │  fetch (CSP rule added by setup)
       ▼                                          ▼
 http://127.0.0.1:8765   —   xdr-broker (local Node process)
@@ -60,7 +60,7 @@ It will: clone Vencord → copy the `xdrRelay` plugin into it → build → patc
 
 1. Start Discord → **Settings → Vencord → Plugins → enable `xdrRelay`**.
 2. Fully restart Discord once (tray icon → Quit → reopen) so the CSP rule applies.
-3. On x.com, click the 💬 chip on any post bar until it shows the desktop icon, and send.
+3. On x.com, click the mode chip on any post bar (chat-bubble = Tab, desktop-icon = App) until it shows the desktop icon, and send.
 
 To undo everything: `node setup.mjs --uninstall` (removes the broker + autostart), and `pnpm uninject` inside `app-mode/vencord` restores stock Vencord.
 
@@ -73,18 +73,19 @@ To undo everything: `node setup.mjs --uninstall` (removes the broker + autostart
 
 ## The send bar
 
-Under every post on x.com (styled to match X's light/dark theme):
+Hover a post on x.com to reveal its bar (styled to match X's light/dark theme; on a post's own page the bar is always visible):
 
 ```
-[icon] Server ▾   #channel ▾   💬/🖥   @   Send ➤
+[icon] Server ▾   #channel ▾   [mode]   @   Send
 ```
 
+- **Hover-reveal** — bars stay out of the feed until you hover their post; the post you're actually viewing (permalink page) keeps its bar permanently.
 - **Server / Channel dropdowns** — themed popovers built from your recently visited channels (recorded by the Discord side). Selecting on one bar updates all bars. *"Open tab"* means "whatever channel is currently open on the sending side".
-- **💬/🖥 mode chip** — Tab mode (browser tab) ↔ App mode (desktop app). Switching to App health-checks the broker first and refuses if it's not running.
-- **@ ping presets** — click `@` to open the preset manager: named presets (tabs), add users by Discord ID (paste several at once for bulk add), optional labels, remove via ✕, create presets with `＋ New preset`, delete a preset by right-clicking its tab. Right-click the `@` button itself to toggle pings on/off; the button shows a count badge. When ON, sends mention `<@id>` for every user in the active preset after the link. IDs are validated as 17–20 digit snowflakes.
-- **Send** — converts the post URL to fixupx, delivers, and shows a toast with the outcome and the exact path used (`via dom-nav`, `via app`, or the specific error).
+- **Mode chip** — Tab mode (browser tab, chat-bubble icon) ↔ App mode (desktop app, desktop icon). Switching to App health-checks the broker first and refuses if it's not running.
+- **@ ping presets** — click `@` to open the preset manager: named presets (tabs), add users by Discord ID (paste several at once for bulk add), optional labels, remove via ✕, create presets with `＋ New preset` (inline name field, Enter or ✓ to confirm), delete a preset by right-clicking its tab twice (first click arms it, red). Right-click the `@` button itself to toggle pings on/off; the button shows a count badge. When ON, sends mention `<@id>` for every user in the active preset after the link. IDs are validated as 17–20 digit snowflakes.
+- **Send** — converts the post URL to fixupx, delivers, and shows a toast with the outcome and the exact path used (`via dom-nav`, `via app`, or the specific error). The button dims while its send is in flight.
 
-A floating **➤ Discord** pill (bottom-right on X) quick-sends the last post you hovered.
+**Quick-send:** a floating **Discord** pill (bottom-right on X, theme-aware) sends the last post you hovered. Dismiss it with its ✕ (persisted); right-click any send bar's empty space to bring it back. Keyboard: **Alt+D** does the same as the pill.
 
 ## How it works
 
@@ -97,7 +98,7 @@ A floating **➤ Discord** pill (bottom-right on X) quick-sends the last post yo
 | `xdr.lock.<id>` | Discord side | Claim guard against double-handling |
 | `xdr.ping` | Discord side | Leader heartbeat (only one tab answers) |
 | `xdr.history` | Discord side | Recent channels + server names/icons |
-| `xdr.target` / `xdr.pingPreset` / `xdr.mode` | X side | Last selection / ping presets / transport mode |
+| `xdr.target` / `xdr.pingPreset` / `xdr.mode` / `xdr.pillHidden` | X side | Last selection / ping presets / transport mode / pill dismissed |
 
 The Discord tab sends **DOM-primary**: it SPA-navigates to the target channel, *verifies the composer is really pointing at that channel* (aria-label check — the wrong-channel guard), pastes via a real `ClipboardEvent` (the only insert method that doesn't desync Discord's Slate editor), submits, navigates back. Internal `MessageActions.sendMessage` is fallback-only, because its promise resolves on *dispatch*, not delivery.
 
@@ -135,6 +136,7 @@ userscript/x-discord-relay.user.js     the product — single IIFE, X side + Dis
 app-mode/broker/xdr-broker.mjs         local HTTP bridge (no dependencies)
 app-mode/vencord-plugin/xdrRelay/      the Vencord userplugin (TypeScript)
 app-mode/setup.mjs                     cross-platform installer (also: --uninstall)
+app-mode/rebuild.mjs                   redeploy plugin after any Vencord rebuild/Installer run
 AGENTS.md                              working context, hard invariants, lessons ledger
 issues.md                              external audit history
 ```
@@ -154,7 +156,8 @@ issues.md                              external audit history
 | 1.4 | **DOM-primary sends** with SPA navigation + channel-label verification |
 | 1.4.1–1.4.3 | Single-paste `domSend` (poll-verified, `DOMFAIL` short-circuit), live history in bars, icon cache, audit fixes |
 | 1.5–1.6.1 | **Ping presets**: popover manager, multi-preset tabs, bulk add, `<@id>` mentions; clean server names |
-| 1.7.0 | **App mode**: 💬/🖥 chip, local broker, Vencord `xdrRelay` plugin with nonce-verified delivery acks |
+| 1.7.0 | **App mode**: mode chip, local broker, Vencord `xdrRelay` plugin with nonce-verified delivery acks |
+| 1.8.0 | **UI pass**: hover-reveal bars, theme-aware dismissible quick-send pill, Alt+D quick-send, inline preset create/delete (no native dialogs), SVG mode chip, in-flight send guard, cross-tab ping-badge sync, `clientSend` payload parity fix (`invalidEmojis: []`, 4-arg `sendMessage`) |
 
 ## License
 

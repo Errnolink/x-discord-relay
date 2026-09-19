@@ -20,19 +20,22 @@ A Tampermonkey userscript (`x-discord-relay.user.js`, single file, ~1270 lines) 
 | `userscript/x-discord-relay.user.js` | The product. Single IIFE, two halves dispatched by hostname. |
 | `README.md` | User/feature documentation + protocol + FAQ (public-facing, current through v1.7.0). |
 | `issues.md` | External audit (15 issues) with a v1.4.3 resolution banner at top. |
-| *(dev box)* `…/kanso/scripts/xdr-e2e.mjs` | **Regression harness** (kept outside this repo): two live pages (x.com + discord.com login) with Node-bridged GM-storage stubs, running the real script end-to-end. Keep runnable.
+| *(dev box)* `…/_archive/kanso/scripts/xdr-e2e.mjs` | **Regression harness** (kept outside this repo): real Discord login page + a served x.com fixture (Playwright route interception — x.com 403s non-browser clients since ~09/2026) with Node-bridged GM-storage stubs, running the real script end-to-end. Keep runnable. |
 
 | `app-mode/broker/xdr-broker.mjs` | Local HTTP bridge (127.0.0.1:8765) for App mode: one-slot requests, claim-on-poll, single-delivery acks. |
 | `app-mode/vencord-plugin/xdrRelay/index.ts` | Desktop-app side of App mode; Vencord userplugin (requires self-built Vencord). |
 | `app-mode/setup.mjs` | Cross-platform one-time setup: clone+build+inject Vencord with the plugin, CSP rule, broker auto-start. |
+| `app-mode/rebuild.mjs` | Redeploy the plugin after ANY Vencord rebuild/Installer run: copies plugin into the canonical clone, `pnpm build`, deploys dist, sanity-checks both userplugins are present. |
 
-## 3. Current state (v1.7.0)
+## 3. Current state (v1.8.0)
 
-- Version state as of 2026-08-18 (v1.7.0): header `@version 1.7.0`, both console log lines `v1.7.0` — consistent. The drift bug is recurring (audit issue #5): on every release, bump `@version` AND both `console.debug('[xdr] … active vX')` lines together.
-- v1.7.0 added **App mode**: 💬/🖥 chip on bars (persisted `xdr.mode`, default `tab` = untouched GM-storage flow), local broker (`broker/xdr-broker.mjs`, verified by live round-trip), Vencord plugin `xdrRelay` (nonce-verified delivery via MESSAGE_CREATE). Broker round-trip + full e2e green; the plugin itself compiles in the user's self-built Vencord (one-time `setup.mjs`) — logged-in app send is user-verified.
+- Version state as of 2026-09-19 (v1.8.0): header `@version 1.8.0`, both console log lines `v1.8.0` — consistent. The drift bug is recurring (audit issue #5): on every release, bump `@version` AND both `console.debug('[xdr] … active vX')` lines together.
+- v1.7.0 added **App mode**: mode chip on bars (persisted `xdr.mode`, default `tab` = untouched GM-storage flow), local broker (`broker/xdr-broker.mjs`, verified by live round-trip), Vencord plugin `xdrRelay` (nonce-verified delivery via MESSAGE_CREATE). Broker round-trip + full e2e green; the plugin itself compiles in the user's self-built Vencord (one-time `setup.mjs`) — logged-in app send is user-verified.
+- 2026-09-19 incident: the Vencord Installer's "Reinstall" (vanilla release build, 20:51 local) overwrote `%APPDATA%\Vencord\dist`, silently removing BOTH userplugins (xdrRelay + GifFolders) while `settings\settings.json` kept them enabled. Fixed by merging xdrRelay into the canonical `Documents\Vencord` clone, rebuild + dist deploy, CDP-verified registration + renderer→broker poll (200, 5 ms). The broker itself was never down (running since 09-17).
+- v1.8.0 (2026-09-19) UI pass: hover-reveal bars (CSS `article[data-xdr-done]:not(:hover)`, `data-xdr-main` exception on permalink pages), theme-aware dismissible pill (`xdr.pillHidden`; right-click a bar's empty space to restore), Alt+D quick-send, inline preset create (Enter/✓) + arm-then-right-click delete (native prompt/confirm removed), SVG mode chip (no emoji), in-flight send dim (`setSending` — visual feedback only; back-to-back sends are never blocked, the per-request lock downstream stays the dedupe point), cross-tab ping-badge sync, and the clientSend parity fix (4-arg `sendMessage` + `invalidEmojis: []` — the v1.7.0 desktop fix applied to the Tab-mode fallback).
 - v1.5/1.6 added the **ping preset system** — **E2E-verified 2026-08-18** (full coverage in `xdr-e2e.mjs`: popover CRUD on the real x.com page, `pingUsers` payload wiring on/off, mention-append asserted by executing the shipped transform bytes against the captured payloads):
   - `xdr.pingPreset` storage: `{presets: {Name: [{id, label}]}, active, on}`.
-  - X side: `@` button = toggle + count; opens a preset manager popover (tabs per preset, add/delete presets via `W.prompt`/`W.confirm`, user list, add/remove users; IDs validated `/^\d{17,20}$/`).
+  - X side: `@` button = toggle + count; opens a preset manager popover (tabs per preset, add/delete presets inline since v1.8.0 — create via `＋ New preset` name field, delete via right-click-twice arm; user list, add/remove users; IDs validated `/^\d{17,20}$/`).
   - Request payload carries `pingUsers: [ids]`; Discord side appends `<@id> …` mentions to the content before sending (`handleRelay`, ~line 1232).
 - User-reported status after v1.4.2: sends were landing via the DOM-nav path (this was the phantom-send fix working); no unresolved complaint on record since.
 
@@ -87,6 +90,8 @@ Key payload shapes:
 | Channel dropdown "not syncing" | per-bar selection state | shared module-level `runXSide.sel` + bar registry (1.3.2) |
 | App-mode send: "Cannot read properties of undefined (reading 'nonce')" | desktop `MessageActions.sendMessage` takes **4 args** `(channelId, message, waitForChannelReady, options)` — missing 4th → internals read `.nonce` of undefined; also `invalidEmojis` must be `[]`, not `false` | 4-arg call `(ch, payload, true, {})` + `invalidEmojis: [], validNonShortcutEmojis: []` (1.7.0, diagnosed by external review of the compiled renderer) |
 | Wrong tab answered relays | unqualified tabs could lead | qualified election (1.1.1) |
+| App-mode plugin gone from desktop client while settings still say "enabled" | Vencord Installer "Reinstall" writes a userplugin-free release build over `%APPDATA%\Vencord\dist`; box had TWO clones racing that single dist target (relay's `app-mode\vencord` vs `Documents\Vencord`) | ONE canonical clone (`Documents\Vencord`) carries ALL userplugins; redeploy with `node app-mode/rebuild.mjs` after any Vencord event (2026-09-19) |
+| Tab-mode internals fallback sent malformed payloads | userscript `clientSend` still used 2-arg `sendMessage` + `invalidEmojis: false` after the desktop plugin got the 1.7.0 fix — parity drift between two send paths sharing one contract | 4-arg `sendMessage(ch, payload, true, {})` + `invalidEmojis`/`validNonShortcutEmojis` arrays (1.8.0); keep Tab + App send payloads in lockstep |
 
 
 **Rebuilding after a plugin change (App mode):** `cd vencord && pnpm build && pnpm inject` is NOT enough — a re-patch does not refresh the payload files. After every build, copy `vencord\dist\*` over `%APPDATA%\Vencord\dist\`, then fully restart Discord (tray → Quit). `node setup.mjs` does this automatically on re-runs. PowerShell note: use `pnpm.cmd` (the `pnpm.ps1` shim is blocked without `-ExecutionPolicy Bypass`).
@@ -100,6 +105,7 @@ Key payload shapes:
 - **Tooling traps:** shell `grep` with parentheses in patterns misreports through bash here — use the Grep tool. PowerShell `$vars` get eaten unless the command is single-quoted.
 - **Cannot be tested here:** a logged-in send. The user is the final verifier; ship with the diagnostic story intact (next section).
 - **Releasing:** bump `@version` **and both** `console.debug('[xdr] … active vX')` lines; user re-pastes into Tampermonkey and reloads both tabs (browser restart never required — tabs reload is enough; icons re-cache from GM storage within 24h TTL).
+- **Canonical Vencord clone on this box:** `Documents\Vencord` — it alone carries all userplugins (GifFolders + xdrRelay). NEVER build+inject from `app-mode\vencord`, and NEVER re-run the Vencord Installer without a redeploy: both write userplugin-free builds over the single `%APPDATA%\Vencord\dist`. After any suspect event: `node app-mode/rebuild.mjs`, then a full Discord restart (tray → Quit).
 
 ## 8. Diagnostics to give the user (or run via attached CDP)
 

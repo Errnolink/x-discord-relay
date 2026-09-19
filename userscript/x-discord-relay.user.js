@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → Discord Relay (fixupx)
 // @namespace    xdr.local
-// @version      1.7.0
+// @version      1.8.0
 // @description  Send any X post to Discord as YOUR account through the official client — no token, no API. An X-styled bar under every post: pick server + channel, @ ping presets, one-click Send. Links auto-convert to fixupx.com.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -148,6 +148,15 @@
     function history() {
       try { const h = JSON.parse(gget(HIST_KEY, '[]')); return Array.isArray(h) ? h : []; } catch (e) { return []; }
     }
+    function chanLabel(hh) {
+      if (!hh) return 'open channel';
+      return (hh.name && hh.name[0] === '#') ? hh.name
+        : ((hh.guild === '@me') ? (hh.name || hh.id) : '#' + (hh.name || hh.id));
+    }
+    function setSending(v) {
+      runXSide.sending = v;
+      for (const b of (runXSide.bars || new Set())) { if (b.setSending) b.setSending(v); }
+    }
 
     function styleEl(el, css) { Object.keys(css).forEach(p => el.style.setProperty(p, css[p])); }
 
@@ -252,7 +261,7 @@
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify(payload),
         onload: r => {
-          if (r.status !== 200) { toast('Broker rejected request: ' + r.responseText, 'err'); return; }
+          if (r.status !== 200) { setSending(false); toast('Broker rejected request: ' + r.responseText, 'err'); return; }
           const t0 = Date.now();
           const iv = setInterval(() => {
             x({
@@ -263,23 +272,26 @@
                   let ack = {}; try { ack = JSON.parse(rr.responseText); } catch (e) {}
                   if (ack.ok) toast('Sent to ' + (ack.chName || ('channel ' + ack.ch)) + ' ✓ via app' + (ack.via === 'app-verified' ? '' : ' (unverified)'), 'ok');
                   else toast('Discord app: ' + (ack.err || 'unknown error'), 'err');
+                  setSending(false);
                 } else if (Date.now() - t0 > 12000) {
                   clearInterval(iv);
                   toast('Discord app did not answer. Is the xdrRelay plugin enabled in Vencord?', 'err');
+                  setSending(false);
                 }
               },
-              onerror: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker unreachable mid-poll', 'err'); } },
-              ontimeout: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker timeout mid-poll', 'err'); } }
+              onerror: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker unreachable mid-poll', 'err'); setSending(false); } },
+              ontimeout: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker timeout mid-poll', 'err'); setSending(false); } }
             });
           }, 500);
         },
-        onerror: () => toast('Broker unreachable — is xdr-broker running?', 'err'),
-        ontimeout: () => toast('Broker timeout — is xdr-broker running?', 'err')
+        onerror: () => { setSending(false); toast('Broker unreachable — is xdr-broker running?', 'err'); },
+        ontimeout: () => { setSending(false); toast('Broker timeout — is xdr-broker running?', 'err'); }
       });
     }
     function setTarget(t) { gset(TARGET_KEY, JSON.stringify(t)); }
 
     function relay(rawUrl, target, ping) {
+      setSending(true);
       const url = rawUrl || lastTweetUrl || location.href;
       const link = fixupLink(url);
       if (!link) { toast('No post permalink found (hover a post first, or use its timestamp link)', 'err'); return; }
@@ -294,13 +306,14 @@
         ping: !!ping,
         pingUsers
       };
-      toast('Relaying ' + link + (pingUsers.length ? ' + ' + pingUsers.length + ' ping(s)' : '') + ' …');
+      toast('Relaying to ' + (target ? chanLabel(target) : 'open channel') + (pingUsers.length ? ' +' + pingUsers.length + ' pings' : '') + ' …');
 
       if (getMode() === 'app') {
         // desktop-app transport: hand off to the broker (and to the Vencord
         // plugin behind it). No GM keys are written for this request.
         if (appAlive === false) {
           toast('App mode: broker not reachable. Start xdr-broker, or click the mode chip to switch back to Tab mode.', 'err');
+          setSending(false);
           return;
         }
         appRelay(payload);
@@ -320,11 +333,11 @@
           let ack = {}; try { ack = JSON.parse(raw); } catch (e) {}
           if (ack.ok) toast('Sent to ' + (ack.chName || ('channel ' + ack.ch)) + ' ✓', 'ok');
           else toast('Discord tab' + (ack.at ? ' (' + ack.at + ')' : '') + ': ' + (ack.err || 'unknown error'), 'err');
-          gset(key, ''); gset(lockKey(id), '');
+          gset(key, ''); gset(lockKey(id), ''); setSending(false);
         } else if (Date.now() - t0 > 12000) {
           clearInterval(iv);
           toast('No Discord tab answered. Open discord.com in a browser tab and click into a channel first.', 'err');
-          gset(key, ''); gset(lockKey(id), '');
+          gset(key, ''); gset(lockKey(id), ''); setSending(false);
         }
       }, 120);
     }
@@ -339,7 +352,7 @@
 
     // ---- dropdown popover: ONE per page (not per bar), X-themed ----
     let pop = null;
-    function closePop() { if (pop) { pop.remove(); pop = null; } xdrPingAddFn = null; }
+    function closePop() { if (pop) { pop.remove(); pop = null; } }
     let popSuppress = 0;
     function openPop(anchor, items, onPick) {
       if (Date.now() < popSuppress) return; // same-chip click: toggle closed, don't reopen
@@ -410,14 +423,13 @@
       }
     }, true);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); }, true);
-    let xdrPingAddFn = null;
     ['keydown', 'keyup', 'keypress'].forEach(evt =>
       W.addEventListener(evt, e => {
         if (!e.target || !e.target.getAttribute || !e.target.getAttribute('data-xdr-input')) return;
         if (e.key === 'Escape') return;
-        if (e.type === 'keydown' && e.key === 'Enter' && xdrPingAddFn) {
+        if (e.type === 'keydown' && e.key === 'Enter' && e.target.__xdrEnter) {
           e.preventDefault();
-          xdrPingAddFn();
+          e.target.__xdrEnter();
         }
         e.stopPropagation();
       }, true));
@@ -595,13 +607,15 @@
       modeBtn.setAttribute('data-xdr-mode', '1');
       function refreshModeBtn() {
         const app = getMode() === 'app';
-        modeBtn.textContent = app ? '🖥' : '💬';
+        const SVG_TAB = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+        const SVG_APP = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+        modeBtn.innerHTML = app ? SVG_APP : SVG_TAB;
         modeBtn.title = app
           ? 'Send via Discord desktop app (Vencord plugin) — click to use browser tab instead'
           : 'Send via Discord browser tab — click to use desktop app (Vencord) instead';
         styleEl(modeBtn, { display: 'flex', 'align-items': 'center', 'justify-content': 'center',
           'min-width': '26px', height: '26px', 'border-radius': '9999px', cursor: 'pointer',
-          'font-size': '12px', border: '1px solid ' + C.line, padding: '0 6px',
+          border: '1px solid ' + C.line, padding: '0 6px',
           color: app ? (appAlive === false ? C.sub : C.accent) : C.sub });
       }
       refreshModeBtn();
@@ -729,7 +743,7 @@
             toast('Already added or invalid', 'err');
           }
         }
-        xdrPingAddFn = doAdd;
+        inp.__xdrEnter = doAdd;
 
         addBtnEl.addEventListener('click', e2 => { e2.stopPropagation(); doAdd(); });
         [inp, lblInp].forEach(el => {
@@ -751,19 +765,58 @@
         styleEl(newPresetBtn, { 'font-weight': '600', 'font-size': '12px', color: Cp.accent, cursor: 'pointer', padding: '4px 8px', 'border-radius': '6px' });
         newPresetBtn.addEventListener('mouseenter', () => newPresetBtn.style.setProperty('background', Cp.hover));
         newPresetBtn.addEventListener('mouseleave', () => newPresetBtn.style.setProperty('background', 'transparent'));
-        newPresetBtn.addEventListener('click', e2 => {
-          e2.stopPropagation();
-          const name = W.prompt('New preset name:');
-          if (!name || !name.trim()) return;
+
+        const nameInp = document.createElement('input');
+        nameInp.placeholder = 'Preset name';
+        nameInp.setAttribute('type', 'text');
+        nameInp.setAttribute('data-xdr-input', '1');
+        styleEl(nameInp, { flex: '1', padding: '4px 8px', 'border-radius': '8px', border: '1px solid ' + Cp.line,
+          background: 'transparent', color: Cp.text, font: '13px system-ui, sans-serif', outline: 'none', 'min-width': '0', display: 'none' });
+
+        const okBtn = document.createElement('div');
+        okBtn.setAttribute('role', 'button');
+        okBtn.textContent = '✓';
+        styleEl(okBtn, { display: 'none', 'align-items': 'center', 'justify-content': 'center', width: '26px', height: '26px',
+          'border-radius': '6px', cursor: 'pointer', 'font-weight': '800', color: '#2ecc71' });
+        okBtn.addEventListener('mouseenter', () => okBtn.style.setProperty('background', Cp.hover));
+        okBtn.addEventListener('mouseleave', () => okBtn.style.setProperty('background', 'transparent'));
+
+        const cancelBtn = document.createElement('div');
+        cancelBtn.setAttribute('role', 'button');
+        cancelBtn.textContent = '✕';
+        styleEl(cancelBtn, { display: 'none', 'align-items': 'center', 'justify-content': 'center', width: '26px', height: '26px',
+          'border-radius': '6px', cursor: 'pointer', 'font-weight': '800', color: Cp.sub });
+        cancelBtn.addEventListener('mouseenter', () => cancelBtn.style.setProperty('background', Cp.hover));
+        cancelBtn.addEventListener('mouseleave', () => cancelBtn.style.setProperty('background', 'transparent'));
+
+        function setCreateMode(on) {
+          newPresetBtn.style.setProperty('display', on ? 'none' : 'block');
+          nameInp.style.setProperty('display', on ? 'block' : 'none');
+          okBtn.style.setProperty('display', on ? 'flex' : 'none');
+          cancelBtn.style.setProperty('display', on ? 'flex' : 'none');
+          if (on) setTimeout(() => nameInp.focus(), 40);
+        }
+        function doCreate() {
+          const name = nameInp.value.trim();
+          if (!name) { toast('Preset name required', 'err'); return; }
           const d2 = getPingData();
-          if (d2.presets[name.trim()]) { toast('Preset already exists', 'err'); return; }
-          d2.presets[name.trim()] = [];
-          d2.active = name.trim();
+          if (d2.presets[name]) { toast('Preset already exists', 'err'); return; }
+          d2.presets[name] = [];
+          d2.active = name;
           setPingData(d2);
-          viewPreset = name.trim();
+          viewPreset = name;
+          nameInp.value = '';
+          setCreateMode(false);
           renderAll();
           refreshPingBtn();
-        });
+          toast('Preset "' + name + '" created', 'ok');
+        }
+        nameInp.__xdrEnter = doCreate;
+        newPresetBtn.addEventListener('click', e2 => { e2.stopPropagation(); setCreateMode(true); });
+        okBtn.addEventListener('click', e2 => { e2.stopPropagation(); doCreate(); });
+        cancelBtn.addEventListener('click', e2 => { e2.stopPropagation(); setCreateMode(false); });
+        ['mousedown', 'click', 'mouseup'].forEach(evt =>
+          nameInp.addEventListener(evt, e2 => e2.stopPropagation()));
 
         const toggleLbl = document.createElement('span');
         const td = getPingData();
@@ -782,6 +835,9 @@
         });
 
         bottomRow.appendChild(newPresetBtn);
+        bottomRow.appendChild(nameInp);
+        bottomRow.appendChild(okBtn);
+        bottomRow.appendChild(cancelBtn);
         bottomRow.appendChild(toggleLbl);
         p.appendChild(bottomRow);
 
@@ -812,14 +868,25 @@
             tab.addEventListener('contextmenu', e2 => {
               e2.preventDefault(); e2.stopPropagation();
               if (Object.keys(getPingData().presets).length <= 1) { toast('Cannot delete the last preset', 'err'); return; }
-              if (!W.confirm('Delete preset "' + name + '"?')) return;
-              const d3 = getPingData();
-              delete d3.presets[name];
-              if (d3.active === name) d3.active = Object.keys(d3.presets)[0];
-              setPingData(d3);
-              viewPreset = d3.active;
-              renderAll();
-              refreshPingBtn();
+              if (tab.__xdrArm) {
+                delete tab.__xdrArm;
+                const d3 = getPingData();
+                delete d3.presets[name];
+                if (d3.active === name) d3.active = Object.keys(d3.presets)[0];
+                setPingData(d3);
+                viewPreset = d3.active;
+                renderAll();
+                refreshPingBtn();
+                toast('Deleted preset "' + name + '"');
+              } else {
+                tab.__xdrArm = true;
+                tab.style.setProperty('color', '#ff5c7a');
+                tab.style.setProperty('border-color', '#ff5c7a');
+                tab.title = 'Right-click again to delete "' + name + '"';
+                setTimeout(() => {
+                  if (tab.__xdrArm) { delete tab.__xdrArm; tab.title = ''; renderAll(); }
+                }, 4000);
+              }
             });
             tabBar.appendChild(tab);
           });
@@ -893,15 +960,32 @@
       bar.appendChild(modeBtn);
       bar.appendChild(pingBtn);
       bar.appendChild(sendBtn);
+      bar.refreshPing = refreshPingBtn;
+      bar.setSending = on => { sendBtn.style.setProperty('opacity', on ? '.45' : '1'); sendBtn.style.setProperty('pointer-events', on ? 'none' : 'auto'); };
+      bar.addEventListener('contextmenu', ev => {
+        if (ev.target !== bar) return;
+        if (gget('xdr.pillHidden', '') === '1') { gset('xdr.pillHidden', '0'); makePill(); toast('Quick-send pill restored'); }
+      });
       return bar;
     }
 
+    const hoverCss = document.createElement('style');
+    hoverCss.textContent =
+      'article[data-xdr-done]:not(:hover) [data-xdr-bar]{display:none!important}' +
+      'article[data-xdr-main] [data-xdr-bar]{display:flex!important}' +
+      '#xdrPill [data-xdr-pillx]{opacity:0;transition:opacity .12s ease}#xdrPill:hover [data-xdr-pillx]{opacity:1}';
     function injectBars() {
+      if (!hoverCss.isConnected && document.documentElement) document.documentElement.appendChild(hoverCss);
+      const statusPath = (location.pathname.match(/^\/[^/]+\/status\/\d+/) || [])[0];
       let arts = document.querySelectorAll('article[data-testid="tweet"]');
       if (!arts.length) arts = document.querySelectorAll('article'); // logged-out layout fallback
       for (const art of arts) {
+        const u = articleUrl(art);
+        if (u && statusPath) {
+          try { if (new URL(u, location.origin).pathname.startsWith(statusPath)) art.setAttribute('data-xdr-main', '1'); else art.removeAttribute('data-xdr-main'); } catch (e) {}
+        } else if (art.getAttribute('data-xdr-main')) art.removeAttribute('data-xdr-main');
         if (art.getAttribute('data-xdr-done')) continue;
-        if (!articleUrl(art)) continue;
+        if (!u) continue;
         const replyEl = art.querySelector('[data-testid="reply"]') || art.querySelector('[role="group"]');
         // climb to the first node with 3+ element children — that's the full
         // action ROW ([data-testid=reply] is just the reply button; its parent
@@ -922,13 +1006,36 @@
 
     // floating quick-send: posts the last hovered post to the selected target
     function makePill() {
+      if (gget('xdr.pillHidden', '') === '1') return;
+      const dark = xTheme() === 'dark';
       const p = document.createElement('div');
-      p.textContent = '➤ Discord';
+      p.id = 'xdrPill';
       styleEl(p, { position: 'fixed', right: '20px', bottom: '20px', 'z-index': '2147483647',
-        padding: '8px 14px', 'border-radius': '999px', cursor: 'pointer',
-        font: '600 13px system-ui, sans-serif', color: '#fff',
-        background: '#1c1f2e', border: '1px solid #667bff',
-        'box-shadow': '0 6px 20px rgba(0,0,0,.4)', 'user-select': 'none' });
+        display: 'flex', 'align-items': 'center', gap: '8px', padding: '7px 8px 7px 14px', 'border-radius': '999px', cursor: 'pointer',
+        font: '600 13px system-ui, sans-serif',
+        color: dark ? '#e7e9ea' : '#0f1419',
+        background: dark ? '#1e2126' : '#ffffff', border: '1px solid ' + (dark ? '#2f3336' : '#eff3f4'),
+        'box-shadow': '0 6px 20px rgba(0,0,0,' + (dark ? '.4' : '.12') + ')', 'user-select': 'none' });
+      const ic = document.createElement('span');
+      ic.innerHTML = SEND_SVG;
+      styleEl(ic, { display: 'flex', 'align-items': 'center', color: '#1d9bf0' });
+      const lbl = document.createElement('span');
+      lbl.textContent = 'Discord';
+      const x = document.createElement('span');
+      x.setAttribute('data-xdr-pillx', '1');
+      x.textContent = '✕';
+      styleEl(x, { display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'min-width': '18px', height: '18px',
+        'border-radius': '50%', cursor: 'pointer', 'font-size': '11px', 'font-weight': '800',
+        color: dark ? '#71767b' : '#536471' });
+      x.addEventListener('click', ev => {
+        ev.stopPropagation();
+        gset('xdr.pillHidden', '1');
+        p.remove();
+        toast('Quick-send pill hidden — right-click a send bar to bring it back');
+      });
+      p.appendChild(ic);
+      p.appendChild(lbl);
+      p.appendChild(x);
       p.addEventListener('click', ev => { ev.stopPropagation(); relay(null, getTarget(), isPingOn()); });
       document.documentElement.appendChild(p);
     }
@@ -941,10 +1048,22 @@
       }
     }
     GM_addValueChangeListener(HIST_KEY, (name, oldV, newV, remote) => { if (remote) syncAllBarsModule(); });
+    GM_addValueChangeListener(PING_PRESET_KEY, (name, oldV, newV, remote) => {
+      if (!remote) return;
+      for (const b of (runXSide.bars || new Set())) { if (b.refreshPing) b.refreshPing(); }
+    });
     setInterval(sweepStale, 60000);
     sweepStale();
     if (document.documentElement) makePill(); else setTimeout(makePill, 300);
-    console.debug('[xdr] X side active v1.7.0');
+    W.addEventListener('keydown', e => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'KeyD') {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault(); e.stopPropagation();
+        relay(lastTweetUrl, getTarget(), isPingOn());
+      }
+    }, true);
+    console.debug('[xdr] X side active v1.8.0');
   }
 
   // ---------------- Discord side ----------------
@@ -1225,10 +1344,10 @@
       const ma = findMessageActions();
       if (!ma) return null;
       const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1000000));
-      const payload = { content, tts: false, invalidEmojis: false, nonce };
+      const payload = { content, tts: false, invalidEmojis: [], validNonShortcutEmojis: [], nonce };
       for (let i = 0; i < 2; i++) {
         try {
-          const p = ma.sendMessage(channelId, payload);
+          const p = ma.sendMessage(channelId, payload, true, {});
           if (p && typeof p.then === 'function') await p;
           return 'client(' + maVia + ')';
         } catch (e) {
@@ -1364,7 +1483,7 @@
       findMessageActions();
     }, 3000);
 
-    console.debug('[xdr] Discord side active v1.7.0');
+    console.debug('[xdr] Discord side active v1.8.0');
   }
 
   // ---------------- dispatch ----------------
