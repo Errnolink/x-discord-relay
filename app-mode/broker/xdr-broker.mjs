@@ -16,11 +16,23 @@
 //     (a failed send is ack'd explicitly — never retried, one-send invariant)
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const PORT = Number(process.env.XDR_BROKER_PORT || process.argv[2] || 8765);
 const HOST = '127.0.0.1';
-const REQ_TTL = 15000;   // unclaimed request expiry (matches userscript request expiry)
-const ACK_TTL = 60000;   // ack pickup window
+function loadToken() {
+  for (const src of [process.env.XDR_BROKER_TOKEN, process.argv[3]]) {
+    if (src && src.trim()) return src.trim();
+  }
+  try {
+    const t = readFileSync(new URL('.token', import.meta.url), 'utf8').trim();
+    if (t) return t;
+  } catch {}
+  return '';
+}
+const TOKEN = loadToken();
+const REQ_TTL = Number(process.env.XDR_REQ_TTL_MS || 15000);   // unclaimed request expiry (matches userscript request expiry)
+const ACK_TTL = Number(process.env.XDR_ACK_TTL_MS || 60000);   // ack pickup window
 
 let pending = null;      // {req, ts, claimed}
 const acks = new Map();  // id -> {body, ts, consumed}
@@ -35,8 +47,8 @@ function unpark(set, w) {
   set.delete(w);
   clearTimeout(w.timer);
 }
-function parkPoll(res, ms, onTimeout) {
-  const w = { res, timer: 0 };
+function parkPoll(req, res, ms, onTimeout) {
+  const w = { res, req, timer: 0 };
   w.timer = setTimeout(() => {
     pollWaiters.delete(w);
     onTimeout();
@@ -45,10 +57,10 @@ function parkPoll(res, ms, onTimeout) {
   pollWaiters.add(w);
   return w;
 }
-function parkAck(id, res, ms) {
+function parkAck(id, req, res, ms) {
   let set = ackWaiters.get(id);
   if (!set) { set = new Set(); ackWaiters.set(id, set); }
-  const w = { res, timer: 0 };
+  const w = { res, req, timer: 0 };
   w.timer = setTimeout(() => {
     set.delete(w);
     if (!set.size) ackWaiters.delete(id);
@@ -64,16 +76,31 @@ function waitMs(url, cap) {
   return Math.min(Math.floor(n), cap || 30000);
 }
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+const ORIGIN_ALLOW = new Set(['https://discord.com', 'https://x.com', 'https://twitter.com']);
 
-function json(res, code, obj) {
+function corsFor(req) {
+  const out = {
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-XDR-1, X-XDR-Token',
+  };
+  const origin = req.headers && req.headers.origin;
+  if (origin && ORIGIN_ALLOW.has(origin)) out['Access-Control-Allow-Origin'] = origin;
+  return out;
+}
+
+function json(res, code, obj, req) {
+  if (res.writableEnded) return;
   const body = JSON.stringify(obj ?? {});
-  res.writeHead(code, { ...CORS, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+  res.writeHead(code, { ...corsFor(req || {}), 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function apiAllowed(req) {
+  const host = (req.headers && req.headers.host) || '';
+  if (host !== `${HOST}:${PORT}` && host !== `localhost:${PORT}`) return 'bad host (DNS-rebinding guard)';
+  if (req.headers['x-xdr-1'] !== '1') return 'missing client header';
+  if (TOKEN && req.headers['x-xdr-token'] !== TOKEN) return 'bad token';
+  return '';
 }
 
 function readBody(req) {
@@ -90,9 +117,16 @@ const server = http.createServer(async (req, res) => {
   const route = `${req.method} ${url.pathname.replace(/\/+$/, '') || '/'}`;
 
   try {
-    if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
+    if (req.method === 'OPTIONS') {
+      const origin = req.headers && req.headers.origin;
+      if (origin && !ORIGIN_ALLOW.has(origin)) { res.writeHead(403); res.end(); return; }
+      res.writeHead(204, corsFor(req)); res.end(); return;
+    }
 
-    if (route === 'GET /health') { json(res, 200, { ok: true, v: 1, ts: Date.now() }); return; }
+    if (route === 'GET /health') { json(res, 200, { ok: true, v: 1, ts: Date.now() }, req); return; }
+
+    const denied = apiAllowed(req);
+    if (denied) { json(res, 401, { ok: false, err: denied }, req); return; }
 
     if (route === 'POST /req') {
       const body = await readBody(req);
@@ -100,33 +134,36 @@ const server = http.createServer(async (req, res) => {
       // resolved by the plugin (the app's currently viewed channel), just as
       // the browser-tab side resolves them from the leader tab.
       if (!body || typeof body.id !== 'string' || typeof body.link !== 'string') {
-        json(res, 400, { ok: false, err: 'bad request shape (need string id + link)' }); return;
+        json(res, 400, { ok: false, err: 'bad request shape (need string id + link)' }, req); return;
+      }
+      if (pending && !pending.claimed && Date.now() - pending.ts < REQ_TTL) {
+        json(res, 409, { ok: false, err: 'busy — relay in progress, retry' }, req); return;
       }
       pending = { req: body, ts: Date.now(), claimed: false };
       if (pollWaiters.size) {
         const first = pollWaiters.values().next().value;
         unpark(pollWaiters, first);
         pending.claimed = true;
-        json(first.res, 200, { req: pending.req });
-        for (const o of [...pollWaiters]) { unpark(pollWaiters, o); json(o.res, 200, { req: null }); }
+        json(first.res, 200, { req: pending.req }, first.req);
+        for (const o of [...pollWaiters]) { unpark(pollWaiters, o); json(o.res, 200, { req: null }, o.req); }
       }
-      json(res, 200, { ok: true }); return;
+      json(res, 200, { ok: true }, req); return;
     }
 
     if (route === 'GET /poll') {
       if (pending && !pending.claimed && Date.now() - pending.ts < REQ_TTL) {
         pending.claimed = true;
-        json(res, 200, { req: pending.req });
+        json(res, 200, { req: pending.req }, req);
       } else if (waitMs(url) > 0) {
         if (pending && Date.now() - pending.ts >= REQ_TTL) pending = null;
-        const w = parkPoll(res, waitMs(url), () => {
+        const w = parkPoll(req, res, waitMs(url), () => {
           if (pending && Date.now() - pending.ts >= REQ_TTL) pending = null;
-          json(res, 200, { req: null });
+          json(res, 200, { req: null }, req);
         });
         req.on('close', () => { if (pollWaiters.has(w)) unpark(pollWaiters, w); });
       } else {
-        pending = null;
-        json(res, 200, { req: null });
+        if (pending && Date.now() - pending.ts >= REQ_TTL) pending = null;
+        json(res, 200, { req: null }, req);
       }
       return;
     }
@@ -140,29 +177,29 @@ const server = http.createServer(async (req, res) => {
         const set = ackWaiters.get(id);
         if (set && set.size) {
           ackWaiters.delete(id);
-          for (const w of set) { clearTimeout(w.timer); json(w.res, 200, body); }
+          for (const w of set) { clearTimeout(w.timer); json(w.res, 200, body, w.req); }
           acks.get(id).consumed = true;
         }
-        json(res, 200, { ok: true }); return;
+        json(res, 200, { ok: true }, req); return;
       }
       if (req.method === 'GET') {
         const a = acks.get(id);
         if (a && !a.consumed && Date.now() - a.ts < ACK_TTL) { a.consumed = true; json(res, 200, a.body); return; }
         if (waitMs(url) > 0) {
-          const w = parkAck(id, res, waitMs(url));
+          const w = parkAck(id, req, res, waitMs(url));
           req.on('close', () => {
             const s = ackWaiters.get(id);
             if (s && s.has(w)) { unpark(s, w); if (!s.size) ackWaiters.delete(id); }
           });
           return;
         }
-        res.writeHead(204, CORS); res.end(); return;
+        res.writeHead(204, corsFor(req)); res.end(); return;
       }
     }
 
-    json(res, 404, { ok: false, err: 'no such route' });
+    json(res, 404, { ok: false, err: 'no such route' }, req);
   } catch (e) {
-    json(res, 400, { ok: false, err: String(e && e.message || e) });
+    json(res, 400, { ok: false, err: String(e && e.message || e) }, req);
   }
 });
 

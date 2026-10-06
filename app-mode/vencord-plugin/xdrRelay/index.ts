@@ -39,6 +39,11 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Wait for MESSAGE_CREATE with our nonce before acking 'verified' (honest acks)",
         default: true,
+    },
+    brokerToken: {
+        type: OptionType.STRING,
+        description: "xdr-broker token (only needed if the broker was started with one)",
+        default: "",
     }
 });
 
@@ -100,10 +105,17 @@ function getDispatcher(): Dispatcher | null {
     return isDispatcher(candidate) ? candidate : null;
 }
 
+function brokerHeaders(): Record<string, string> {
+    const h: Record<string, string> = { "X-XDR-1": "1" };
+    const token = settings.store.brokerToken;
+    if (token) h["X-XDR-Token"] = token;
+    return h;
+}
+
 async function post(path: string, body?: unknown): Promise<Response> {
     return fetch(settings.store.brokerUrl + path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...brokerHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify(body ?? {})
     });
 }
@@ -288,7 +300,7 @@ export default definePlugin({
                     const killer = setTimeout(() => { try { ctrl.abort(); } catch { /* ignore */ } }, 30000);
                     let data: { req: RelayRequest | null } | null = null;
                     try {
-                        const res = await fetch(`${settings.store.brokerUrl}/poll?wait=25000`, { method: "GET", signal: ctrl.signal });
+                        const res = await fetch(`${settings.store.brokerUrl}/poll?wait=25000`, { method: "GET", headers: brokerHeaders(), signal: ctrl.signal });
                         data = (await res.json()) as { req: RelayRequest | null };
                     } catch (e) {
                         // TypeError from fetch = CSP still blocking localhost

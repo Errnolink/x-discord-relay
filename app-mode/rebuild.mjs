@@ -11,7 +11,8 @@
  * Usage:  node rebuild.mjs [path-to-vencord-clone]
  * After:  fully restart Discord (tray → Quit), then send a test relay.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -50,6 +51,25 @@ console.log(`== Step 1: copy plugin -> ${vc}`);
 const upDir = join(vc, 'src', 'userplugins', 'xdrRelay');
 mkdirSync(upDir, { recursive: true });
 copyFileSync(pluginSrc, join(upDir, 'index.ts'));
+
+console.log('== Step 1b: broker token...');
+const tokenFile = join(__dirname, 'broker', '.token');
+let brokerToken = '';
+try { brokerToken = readFileSync(tokenFile, 'utf8').trim(); } catch {}
+if (!brokerToken) {
+  brokerToken = randomBytes(16).toString('hex');
+  writeFileSync(tokenFile, brokerToken + '\n', 'utf8');
+  console.log('   New token generated.');
+} else {
+  console.log('   Existing token reused.');
+}
+const copiedPlugin = join(upDir, 'index.ts');
+writeFileSync(copiedPlugin,
+  readFileSync(copiedPlugin, 'utf8').replace('default: ""', `default: "${brokerToken}"`),
+  'utf8');
+console.log('   Token baked into the copied plugin (broker reads the same .token file).');
+console.log('   Userscript needs it too: set BROKER_TOKEN in runXSide to:');
+console.log(`   ${brokerToken}`);
 
 console.log('== Step 2: pnpm install + build');
 for (const args of [['install', '--prefer-offline'], ['build']]) {

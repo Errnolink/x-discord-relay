@@ -4,6 +4,7 @@ desktop.ini
 *.log
 node_modules/
 *.lnk
+app-mode/broker/.token
 
 # Vencord source clone + built payload (setup.mjs manages it)
 app-mode/vencord/

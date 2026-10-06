@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → Discord Relay (fixupx)
 // @namespace    xdr.local
-// @version      1.9.2
+// @version      1.10.0
 // @description  Send any X post to Discord as YOUR account through the official client — no token, no API. An X-styled bar under every post: pick server + channel, @ ping presets, one-click Send. Links auto-convert to fixupx.com.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -64,6 +64,12 @@
   }
 
   // purge ack/lock keys abandoned by a crashed or closed tab (values carry ts)
+  function delKey(k) {
+    try {
+      if (typeof GM_deleteValue === 'function') GM_deleteValue(k);
+      else gset(k, '');
+    } catch (e) {}
+  }
   function sweepStale() {
     try {
       if (typeof GM_listValues !== 'function' || typeof GM_deleteValue !== 'function') return;
@@ -71,9 +77,10 @@
       for (const k of GM_listValues()) {
         if (!k.startsWith('xdr.ack.') && !k.startsWith('xdr.lock.')) continue;
         const v = gget(k, '');
+        if (!v) { GM_deleteValue(k); continue; }
         let ts = 0;
-        try { ts = JSON.parse(v).ts || 0; } catch (e) { const m = v.match(/:(\d{12,})/); if (m) ts = +m[1]; }
-        if (ts && now - ts > 60000) GM_deleteValue(k);
+        try { ts = JSON.parse(v).ts || 0; } catch (e) { const m = String(v).match(/:(\d{12,})/); if (m) ts = +m[1]; }
+        if (!ts || now - ts > 60000) GM_deleteValue(k);
       }
     } catch (e) {}
   }
@@ -96,6 +103,12 @@
     const TARGET_KEY = 'xdr.target';
     const MODE_KEY = 'xdr.mode';
     const BROKER = 'http://127.0.0.1:8765';
+    const BROKER_TOKEN = '';
+    function brokerHeaders(extra) {
+      const h = Object.assign({ 'X-XDR-1': '1' }, extra || {});
+      if (BROKER_TOKEN) h['X-XDR-Token'] = BROKER_TOKEN;
+      return h;
+    }
 
     const CSS_TEXT = [
       '.xdr-split{display:inline-flex;align-items:center;flex:0 0 auto;max-width:210px;background:transparent;border:none;opacity:.6;transition:opacity .12s ease}',
@@ -186,6 +199,8 @@
 
     let lastTweetUrl = null;
     let lastTweetText = '';
+    let lastHoverTs = 0;
+    let healCount = 0;
 
     function getPingData() {
       try {
@@ -306,9 +321,10 @@
       const finish = ok => { setSending(false); try { if (cb) cb(ok); } catch (e) {} };
       x({
         method: 'POST', url: BROKER + '/req', timeout: 4000,
-        headers: { 'Content-Type': 'application/json' },
+        headers: brokerHeaders({ 'Content-Type': 'application/json' }),
         data: JSON.stringify(payload),
         onload: r => {
+          if (r.status === 409) { toast('Relay busy — a send is already in flight, retry', 'err'); finish(false); return; }
           if (r.status !== 200) { toast('Broker rejected request: ' + r.responseText, 'err'); finish(false); return; }
           const t0 = Date.now();
           let lastStart = 0;
@@ -326,6 +342,7 @@
             }
             x({
               method: 'GET', url: ackUrl + '?wait=' + Math.min(10000, remain - 500), timeout: 15000,
+              headers: brokerHeaders(),
               onload: rr => {
                 if (rr.status === 200 && rr.responseText) {
                   let ack = {}; try { ack = JSON.parse(rr.responseText); } catch (e) {}
@@ -379,8 +396,8 @@
         appRelay(payload, cb);
         return;
       }
-      gset(ackKey(id), '');
-      gset(lockKey(id), '');
+      delKey(ackKey(id));
+      delKey(lockKey(id));
       gset(REQ_KEY, JSON.stringify(payload));
       const key = ackKey(id);
       const t0 = Date.now();
@@ -391,11 +408,11 @@
           let ack = {}; try { ack = JSON.parse(raw); } catch (e) {}
           if (ack.ok) toast('Sent to ' + (ack.chName || ('channel ' + ack.ch)) + ' ✓', 'ok');
           else toast('Discord tab' + (ack.at ? ' (' + ack.at + ')' : '') + ': ' + (ack.err || 'unknown error'), 'err');
-          gset(key, ''); gset(lockKey(id), ''); doneCb(!!ack.ok);
+          delKey(key); delKey(lockKey(id)); doneCb(!!ack.ok);
         } else if (Date.now() - t0 > 12000) {
           clearInterval(iv);
           toast('No Discord tab answered. Open discord.com in a browser tab and click into a channel first.', 'err');
-          gset(key, ''); gset(lockKey(id), ''); doneCb(false);
+          delKey(key); delKey(lockKey(id)); doneCb(false);
         }
       }, 120);
     }
@@ -406,9 +423,26 @@
       const art = el.closest('article[data-testid="tweet"]') || el.closest('article');
       if (art) {
         const u = articleUrl(art);
-        if (u) { lastTweetUrl = u; lastTweetText = articleSnippet(art); }
+        if (u) { lastTweetUrl = u; lastTweetText = articleSnippet(art); lastHoverTs = Date.now(); }
       }
     }, true);
+    document.addEventListener('focusin', e => {
+      const el = e.target;
+      if (!el || !el.closest) return;
+      const art = el.closest('article[data-testid="tweet"]') || el.closest('article');
+      if (art) {
+        const u = articleUrl(art);
+        if (u) { lastTweetUrl = u; lastTweetText = articleSnippet(art); lastHoverTs = Date.now(); }
+      }
+    }, true);
+    function quickFresh() {
+      if (/^\/[^/]+\/status\/\d+/.test(location.pathname)) return true;
+      if (!lastTweetUrl || Date.now() - lastHoverTs > 30000) {
+        toast('Hover a post first — quick-send needs a recent hover', 'err');
+        return false;
+      }
+      return true;
+    }
 
     let menu = null;
     let menuSuppress = 0;
@@ -938,8 +972,10 @@
       return art.lastElementChild;
     }
     function ensureBtn(art) {
-      if (!art || seenArts.has(art)) return;
+      if (!art) return;
       if (art.querySelector(':scope .xdr-split')) { seenArts.add(art); return; }
+      const reseen = seenArts.has(art);
+      seenArts.delete(art);
       const u = articleUrl(art);
       if (!u) return;
       const row = actionRowOf(art);
@@ -1023,6 +1059,7 @@
         wrap.addEventListener(evt, e => e.stopPropagation()));
       row.appendChild(wrap);
       seenArts.add(art);
+      if (reseen) healCount++;
       const statusPath = (location.pathname.match(/^\/[^/]+\/status\/\d+/) || [])[0];
       try {
         if (statusPath && new URL(u, location.origin).pathname.startsWith(statusPath)) art.setAttribute('data-xdr-main', '1');
@@ -1089,7 +1126,7 @@
       p.appendChild(ic);
       p.appendChild(lbl);
       p.appendChild(xx);
-      p.addEventListener('click', ev => { ev.stopPropagation(); relay(null, currentEntry(), isPingOn()); });
+      p.addEventListener('click', ev => { ev.stopPropagation(); if (quickFresh()) relay(null, currentEntry(), isPingOn()); });
       document.documentElement.appendChild(p);
     }
 
@@ -1135,10 +1172,29 @@
         const t = e.target;
         if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
         e.preventDefault(); e.stopPropagation();
-        relay(lastTweetUrl, currentEntry(), isPingOn());
+        if (quickFresh()) relay(lastTweetUrl, currentEntry(), isPingOn());
       }
     }, true);
-    console.debug('[xdr] X side active v1.9.2');
+    W.__xdrXReport = () => {
+      const ov = document.getElementById('xdrOverlay');
+      return {
+        v: '1.10.0', mode: getMode(), url: location.href,
+        articles: document.querySelectorAll('article[data-testid="tweet"]').length,
+        articlesBare: document.querySelectorAll('article').length,
+        splits: document.querySelectorAll('.xdr-split').length,
+        heals: healCount, queueDepth: pendingArts.size,
+        testids: {
+          reply: !!document.querySelector('[data-testid="reply"]'),
+          tweetText: !!document.querySelector('[data-testid="tweetText"]'),
+          timeLink: !!document.querySelector('a[href*="/status/"] time')
+        },
+        lastHover: lastTweetUrl, lastHoverAgeMs: lastHoverTs ? Date.now() - lastHoverTs : -1,
+        sel: store.sel, histLen: store.hist.length,
+        theme: document.documentElement.getAttribute('data-xdr-theme'),
+        menu: !!menu, composer: !!(ov && !ov.hidden)
+      };
+    };
+    console.debug('[xdr] X side active v1.10.0');
   }
 
   // ---------------- Discord side ----------------
@@ -1336,13 +1392,16 @@
     }
 
     let lastPath = null;
+    let histTimer = 0;
     setInterval(() => {
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
       const m = location.pathname.match(/^\/channels\/(\d+|@me)\/(\d+)/);
       if (!m) return;
-      const ch = m[2], guild = m[1];
-      setTimeout(() => {           // let the composer label + guild rail settle
+      const ch = m[2], guild = m[1], token = location.pathname;
+      clearTimeout(histTimer);
+      histTimer = setTimeout(() => {           // let the composer label + guild rail settle
+        if (location.pathname !== token || currentChannel() !== ch) return;
         let name = channelLabel();
         if (!name) { const t = document.title.match(/#([^\s|#]+)/); if (t) name = t[1]; }
         const meta = guildMeta(guild);
@@ -1384,12 +1443,11 @@
     async function domSend(text) {
       const box = composer();
       if (!box) return false;
-      box.focus();
-      try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (e) {}
-      if (!await pollUntil(() => (box.textContent || '').trim() === '', 800, 50)) {
-        console.debug('[xdr] composer not clearable — not pasting');
-        return false;
+      if ((box.textContent || '').trim() !== '') {
+        console.debug('[xdr] composer occupied — not touching your draft');
+        return 'OCCUPIED';
       }
+      box.focus();
       try {
         const dt = new DataTransfer();
         dt.setData('text/plain', text);
@@ -1407,9 +1465,7 @@
       const btn = Array.from(document.querySelectorAll('[role="button"][aria-label], button[aria-label]'))
         .find(b => /^send$/i.test(b.getAttribute('aria-label') || ''));
       if (btn) btn.click(); else pressEnter();
-      if (await pollUntil(() => (box.textContent || '').trim() === '', 1200, 50)) return true;
-      pressEnter();
-      const flushed = await pollUntil(() => (box.textContent || '').trim() === '', 800, 50);
+      const flushed = await pollUntil(() => (box.textContent || '').trim() === '', 1200, 50);
       console.debug('[xdr] domSend flushed=' + flushed);
       return flushed;
     }
@@ -1457,10 +1513,10 @@
       const isOpen = currentChannel() === channelId;
       if (!isOpen) {
         if (!guild) {
-          // no guild recorded for this channel — internals are the only option
           return clientSend(channelId, content);
         }
-        const okNav = await spaNavigate('/channels/' + guild + '/' + channelId);
+        const targetPath = '/channels/' + guild + '/' + channelId;
+        const okNav = await spaNavigate(targetPath);
         const want = String(chName || '').replace(/^#/, '').trim();
         const verified = okNav && await pollUntil(() => {
           const box = composer();
@@ -1469,14 +1525,17 @@
         }, 4000, 50);
         if (!verified) {
           console.debug('[xdr] nav-verify failed (want="' + want + '") — not pasting');
-          await spaNavigate(back);
-          return clientSend(channelId, content);  // best-effort fallback
+          if (location.pathname === targetPath) await spaNavigate(back);
+          return clientSend(channelId, content);
         }
         const sent = await domSend(content);
-        await spaNavigate(back);
+        if (location.pathname === targetPath) await spaNavigate(back);
+        if (sent === 'OCCUPIED') return 'OCCUPIED';
         return sent ? 'dom-nav' : 'DOMFAIL';
       }
-      return (await domSend(content)) ? 'dom' : 'DOMFAIL';
+      const r = await domSend(content);
+      if (r === 'OCCUPIED') return 'OCCUPIED';
+      return r ? 'dom' : 'DOMFAIL';
     }
 
     // leader election: exactly ONE discord tab answers relay requests.
@@ -1509,18 +1568,47 @@
     });
 
     let lastReqId = null;
+    let handling = false;
+    const reqQueue = [];
+    function queueAck(req, o) {
+      gset(ackKey(req.id), JSON.stringify(Object.assign({ ts: Date.now() }, o)));
+    }
+    function pumpQueue() {
+      if (handling) return;
+      const req = reqQueue.shift();
+      if (!req) return;
+      if (!gget(PING_KEY, '').startsWith(ME + ':')) {
+        queueAck(req, { ok: false, err: 'leadership lost before handling' });
+        pumpQueue();
+        return;
+      }
+      handling = true;
+      handleRelay(req, () => { handling = false; pumpQueue(); });
+    }
     GM_addValueChangeListener(REQ_KEY, (name, oldV, newV, remote) => {
       if (!remote || !isLeader) return;
       let req; try { req = JSON.parse(newV); } catch (e) { return; }
       if (!req || !req.id || req.id === lastReqId) return;
       if (gget(lockKey(req.id), '')) return;
       gset(lockKey(req.id), ME + ':' + Date.now());
+      if (!gget(lockKey(req.id), '').startsWith(ME + ':')) return;
       lastReqId = req.id;
-      handleRelay(req);
+      reqQueue.push(req);
+      if (reqQueue.length > 3) {
+        const dropped = reqQueue.shift();
+        queueAck(dropped, { ok: false, err: 'relay busy — too many at once, retry' });
+      }
+      pumpQueue();
     });
 
-    async function handleRelay(req) {
-      const ack = o => gset(ackKey(req.id), JSON.stringify(Object.assign({ ts: Date.now() }, o)));
+    async function handleRelay(req, done) {
+      const ack = o => {
+        queueAck(req, o);
+        try { if (done) done(); } catch (e) {}
+      };
+      const finish = () => { try { if (done) done(); } catch (e) {} };
+      if (!gget(lockKey(req.id), '').startsWith(ME + ':')) { finish(); return; }
+      if (gget(ackKey(req.id), '')) { finish(); return; }
       if (!req.ts || Date.now() - req.ts > 15000) { ack({ ok: false, err: 'request expired' }); return; }
       if (!gget(PING_KEY, '').startsWith(ME + ':')) { ack({ ok: false, err: 'leadership lost mid-flight' }); return; }
       const ch = req.ch || currentChannel();
@@ -1535,11 +1623,13 @@
       const t0 = Date.now();
       (function attempt() {
         sendToChannel(ch, req.chG || null, content, req.chName).then(via => {
-          if (via && via !== 'DOMFAIL') {
+          if (via && via !== 'DOMFAIL' && via !== 'OCCUPIED') {
             ack({ ok: true, ch, chName: req.chName || channelLabel(), via });
             console.debug('[xdr] sent via ' + via + ' to ' + ch);
           } else if (via === 'DOMFAIL') {
             ack({ ok: false, ch, err: 'composer send failed — the link may still be sitting in the composer; press Enter manually or clear it' });
+          } else if (via === 'OCCUPIED') {
+            ack({ ok: false, ch, err: 'composer has your draft — clear it first, then retry' });
           } else if (Date.now() - t0 < 10000) {
             if (!gget(PING_KEY, '').startsWith(ME + ':')) {
               ack({ ok: false, err: 'leadership lost during retry', ts: Date.now() });
@@ -1563,7 +1653,7 @@
       findMessageActions();
     }, 3000);
 
-    console.debug('[xdr] Discord side active v1.9.2');
+    console.debug('[xdr] Discord side active v1.10.0');
   }
 
   // ---------------- dispatch ----------------

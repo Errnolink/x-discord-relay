@@ -56,11 +56,13 @@ cd app-mode
 node setup.mjs
 ```
 
-It will: clone Vencord → copy the `xdrRelay` plugin into it → build → patch your Discord install → add the CSP rule that lets the plugin reach the broker → install the broker as an auto-starting background service → start it. Then:
+It will: clone Vencord → copy the `xdrRelay` plugin into it (baking in a fresh broker token) → build → patch your Discord install → add the CSP rule that lets the plugin reach the broker → install the broker as an auto-starting background service → start it. Then:
 
 1. Start Discord → **Settings → Vencord → Plugins → enable `xdrRelay`**.
 2. Fully restart Discord once (tray icon → Quit → reopen) so the CSP rule applies.
-3. On x.com, click the mode chip on any post bar (chat-bubble = Tab, desktop-icon = App) until it shows the desktop icon, and send.
+3. On x.com, click any post's `▾` chevron, pick **App** in the composer options (it health-checks the broker), and send.
+
+> `setup.mjs` / `rebuild.mjs` print a broker token on first run (also in `app-mode/broker/.token`, never committed). Paste it into the userscript once: set `BROKER_TOKEN` in `runXSide`. Without it the broker rejects App-mode requests once a token exists. The plugin gets it baked in automatically.
 
 To undo everything: `node setup.mjs --uninstall` (removes the broker + autostart), and `pnpm uninject` inside `app-mode/vencord` restores stock Vencord.
 
@@ -159,6 +161,7 @@ issues.md                              external audit history
 | 1.9.0 | **Composer rebuild**: per-post button + single composer sheet replaces bar-per-post; singleton stylesheet + CSS-var theming, MutationObserver injection, keyboard-navigable menus, visible preset editing (no right-click gestures). **Split-button**: one-click `➤ #channel` send with inline spinner/sent/retry states, `▾` chevron for options |
 | 1.9.1 | **Send-path latency**: nav sleeps (500+700ms) replaced with 50ms readiness polls (pathname → composer aria-label, nav-verify gate unchanged); Send-button click moved ahead of the dead synthetic Enter; all poll steps 50ms |
 | 1.9.2 | **App-mode latency**: broker long-polling (`GET /poll?wait`, `GET /ack/:id?wait`, claim/consume still atomic); plugin subscribes `MESSAGE_CREATE` before sending (fixes 5s-timeout race), `waitForChannelReady=false`, cached module refs, chained re-poll loop, explicit failure acks |
+| 1.10.0 | **Correctness + security audit fixes**: leader-side send queue (cap 3, `relay busy` drop), lock read-back, ack/lock keys deleted on consume (sweeper clears legacy blanks), composer-draft guard (`clear it first` error, single submit), cancellable history watcher, `__xdrXReport` diagnostics, hover-staleness guard. Broker: `X-XDR-1` client header + optional token (`XDR_BROKER_TOKEN`/`.token` file), Host/rebinding guard, Origin allowlist (no more CORS `*`), 409-busy fail-fast. Test suite: `node tests/run.mjs` (syntax + 26 invariant checks + 21 tests) |
 
 ## License
 

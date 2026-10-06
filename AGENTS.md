@@ -27,15 +27,16 @@ A Tampermonkey userscript (`x-discord-relay.user.js`, single file, ~1270 lines) 
 | `app-mode/setup.mjs` | Cross-platform one-time setup: clone+build+inject Vencord with the plugin, CSP rule, broker auto-start. |
 | `app-mode/rebuild.mjs` | Redeploy the plugin after ANY Vencord rebuild/Installer run: copies plugin into the canonical clone, `pnpm build`, deploys dist, sanity-checks both userplugins are present. |
 
-## 3. Current state (v1.9.0)
+## 3. Current state (v1.10.0)
 
-- Version state as of 2026-10-06 (v1.9.0): header `@version 1.9.0`, both console log lines `v1.9.0` — consistent. The drift bug is recurring (audit issue #5): on every release, bump `@version` AND both `console.debug('[xdr] … active vX')` lines together.
+- Version state as of 2026-10-06 (v1.10.0): header `@version 1.10.0`, both console log lines `v1.10.0` — consistent. The drift bug is recurring (audit issue #5): on every release, bump `@version` AND both `console.debug('[xdr] … active vX')` lines together. Enforced by `node tests/run.mjs` (check.mjs).
 - v1.7.0 added **App mode**: mode chip on bars (persisted `xdr.mode`, default `tab` = untouched GM-storage flow), local broker (`broker/xdr-broker.mjs`, verified by live round-trip), Vencord plugin `xdrRelay` (nonce-verified delivery via MESSAGE_CREATE). Broker round-trip + full e2e green; the plugin itself compiles in the user's self-built Vencord (one-time `setup.mjs`) — logged-in app send is user-verified.
 - 2026-09-19 incident: the Vencord Installer's "Reinstall" (vanilla release build, 20:51 local) overwrote `%APPDATA%\Vencord\dist`, silently removing BOTH userplugins (xdrRelay + GifFolders) while `settings\settings.json` kept them enabled. Fixed by merging xdrRelay into the canonical `Documents\Vencord` clone, rebuild + dist deploy, CDP-verified registration + renderer→broker poll (200, 5 ms). The broker itself was never down (running since 09-17).
 - v1.8.0 (2026-09-19) UI pass: hover-reveal bars (CSS `article[data-xdr-done]:not(:hover)`, `data-xdr-main` exception on permalink pages), theme-aware dismissible pill (`xdr.pillHidden`; right-click a bar's empty space to restore), Alt+D quick-send, inline preset create (Enter/✓) + arm-then-right-click delete (native prompt/confirm removed), SVG mode chip (no emoji), in-flight send dim (`setSending` — visual feedback only; back-to-back sends are never blocked, the per-request lock downstream stays the dedupe point), cross-tab ping-badge sync, and the clientSend parity fix (4-arg `sendMessage` + `invalidEmojis: []` — the v1.7.0 desktop fix applied to the Tab-mode fallback).
 - v1.9.0 (2026-10-06) composer rebuild: per-post send button + singleton composer sheet replaces bar-per-post (same `xdr.req` payload, Discord side untouched); one `xdrCss` stylesheet + `data-xdr-theme` CSS-var theming, MutationObserver + rAF injection (10s backstop, no more 1.5s scan), reusable keyboard-navigable `openMenu` listbox, preset CRUD without right-click gestures (double-click + click-to-confirm delete), pill/Alt+D keep instant quick-send.
 - v1.9.1 send-path latency: Discord-tab nav sleeps replaced with 50 ms readiness polls, Send-button click ahead of dead synthetic Enter.
 - v1.9.2 App-mode latency: broker long-poll (`GET /poll?wait`, `GET /ack/:id?wait`, atomic claim/consume — protocol verified live); plugin permanent nonce-map listener subscribed before send (fixes 5 s-timeout race), `waitForChannelReady=false`, cached module refs, chained re-poll, explicit failure acks; `tsc --noEmit` clean in canonical clone.
+- v1.10.0 (2026-10-06) audit fixes: leader-side send queue, lock read-back, ack/lock deletion, draft guard + single submit, cancellable history settle, `__xdrXReport`, broker auth/409, `node tests/run.mjs` suite (syntax + 26 checks + 21 tests).
 - v1.5/1.6 added the **ping preset system** — **E2E-verified 2026-08-18** (full coverage in `xdr-e2e.mjs`: popover CRUD on the real x.com page, `pingUsers` payload wiring on/off, mention-append asserted by executing the shipped transform bytes against the captured payloads):
   - `xdr.pingPreset` storage: `{presets: {Name: [{id, label}]}, active, on}`.
   - X side: `@` button = toggle + count; opens a preset manager popover (tabs per preset, add/delete presets inline since v1.8.0 — create via `＋ New preset` name field, delete via right-click-twice arm; user list, add/remove users; IDs validated `/^\d{17,20}$/`).
@@ -47,23 +48,24 @@ A Tampermonkey userscript (`x-discord-relay.user.js`, single file, ~1270 lines) 
 ```
 x.com/twitter.com                          discord.com (+ptb/canary)
 ┌ runXSide() ─────────────────┐            ┌ runDiscordSide() ───────────────┐
-│ send-bar under each post:   │            │ leader election (2s ticks,      │
-│  [icon] Server▾ #channel▾   │  GM store  │  write-confirmed, qualified =  │
-│  [@ presets] [Send]         │◄──────────►│  channel-open tab outranks)     │
-│ floating ➤ pill             │ xdr.req /  │ history: route watcher (1s) +   │
-│ link → fixupx.com           │  xdr.ack.* │  guild rail + GuildStore names  │
-│ toast + 12s ack polling     │  xdr.lock.*│  + icons; 4s backfill loop      │
-│ icons: canvas via GM xhr    │  xdr.ping  │ send: DOM-primary (navigate →   │
-│  (x.com CSP blocks <img>)   │  xdr.history│  paste → submit → back),       │
+│ send control per post:      │            │ leader election (2s ticks,      │
+│  [➤ #channel | ▾] + sheet   │  GM store  │  write-confirmed, qualified =  │
+│  (1-click send, ▾ = options)│◄──────────►│  channel-open tab outranks)     │
+│ floating Discord pill       │ xdr.req /  │ history: route watcher (1s,    │
+│ link → fixupx.com           │  xdr.ack.* │  cancellable settle) + Guild-   │
+│ toast + 12s ack polling     │  xdr.lock.*│  Store names; 4s backfill loop  │
+│ (deleted on consume, never  │  xdr.ping  │ send: DOM-primary (navigate →   │
+│  blanked — no dead keys)    │  xdr.history│  paste → submit → back),       │
 │                             │  xdr.target│  internals only as fallback     │
-└─────────────────────────────┘  xdr.icons └─────────────────────────────────┘
-                                 xdr.pingPreset
+└─────────────────────────────┘  (no icons key since v1.9.0) └─────────────────────────────────┘
+                                 xdr.pingPreset (+ BROKER_TOKEN const for App mode)
 ```
 
 Key payload shapes:
 - `xdr.req`: `{id, link, ts, ch, chG, chName, ping, pingUsers}` — `chG` (guild id) is what makes DOM navigation possible; entries without it can only use internals.
-- `xdr.history`: `[{id, guild, name, gname, gicon, ts}]` cap 6 — **must be read live, never snapshotted** (audit issues 1–2: a frozen snapshot was why names/icons "never showed").
-- `xdr.icons`: `{url: {d: dataURL, ts}}`, 24h TTL.
+- `xdr.history`: `[{id, guild, name, gname, gicon, ts}]` cap 6 — **must be read live, never snapshotted** (audit issues 1–2: a frozen snapshot was why names/icons "never showed"). History writes use a cancellable settle (fast hops can't misattribute names).
+- `xdr.icons` key REMOVED in v1.9.0 (was `{url: {d: dataURL, ts}}`, 24h TTL) — server icons dropped with the bar UI; any doc reference to it is stale.
+- `xdr.ack.*` / `xdr.lock.*` are DELETED on consume (`delKey`), never blanked — blanked keys were immortal (sweepStale couldn't collect them). The sweeper also clears legacy blanks.
 - Timing invariants: X timeout 12s > Discord attempt window 10s; request expiry 15s; ping freshness 5s; sweep 60s.
 
 ## 5. Hard invariants — do not break these
@@ -71,12 +73,13 @@ Key payload shapes:
 1. **One paste per request, ever.** `domSend` pastes exactly once and every step is poll-verified (`pollUntil`); `DOMFAIL` short-circuits all retries with an explicit ack. Reintroducing retry-paste = duplicate/concatenated messages in Discord (happened twice: v1.4.0 stacking, v1.4.1 async race).
 2. **Never trust `MessageActions.sendMessage` for delivery.** Its promise resolves on *dispatch* — it "succeeds" even logged out. DOM-nav is the only verified path; internals is fallback-only. (App mode honors this with nonce verification: acks distinguish `app-verified` from `app-unverified`.)
 3. **Nav-verify before pasting**: after `spaNavigate('/channels/{g}/{c}')`, the composer's aria-label must contain the target channel name, else refuse to paste and navigate back. This is the wrong-channel guard.
-4. **No `execCommand('insertText')`** into Discord's Slate composer (desyncs the model → undeletable text). Only `ClipboardEvent('paste')` inserts; `execCommand` allowed solely for `selectAll`+`delete` clearing.
+4. **No `execCommand('insertText')`** into Discord's Slate composer (desyncs the model → undeletable text). Only `ClipboardEvent('paste')` inserts. Since v1.10.0 there is no clearing either: a non-empty composer aborts with `OCCUPIED` (`clear it first` error) instead of wiping your draft.
 5. **No push-accessor/document-start hooks on `webpackChunkdiscord_app`** — corrupted Discord boot once (v1.3.0, "Discord not loading"). Capture = plain fake-chunk probes + `"b" in r` main-runtime validation + factory-source scan (`r.m`) as rescue.
-6. **Bars read history live** (`channelsOf` calls `history()`; `bar.sync()` rebuilds server list) and a single module-level `GM_addValueChangeListener(HIST_KEY)` refreshes all bars on remote writes.
-7. **Leadership**: qualified tabs (channel open) outrank others; write-confirmed (`isLeader` from read-back); re-checked before every retry and at request handling.
+6. **Split controls read history live** (central store + `reselect()` by id) and one module-level `GM_addValueChangeListener(HIST_KEY)` repaints labels; no per-control state.
+7. **Leadership**: qualified tabs (channel open) outrank others; write-confirmed (`isLeader` from read-back); re-checked before every retry and at request handling. Lock claims are read-back-confirmed too, and concurrent requests serialize through a leader-side queue (cap 3, extras fail fast with `relay busy`).
 8. **No account-risk surfaces**: no tokens, no API calls, human-click volume only. This is the user's explicit requirement.
-9. **App mode one-send across the broker**: requests are claim-on-poll (delivered to the plugin exactly once, never redelivered); a failed send acks failure explicitly. The broker is the enforcement point — do not add redelivery/retry there.
+9. **App mode one-send across the broker**: requests are claim-on-poll (delivered to the plugin exactly once, never redelivered); a failed send acks failure explicitly. The broker is the enforcement point — do not add redelivery/retry there. Second `POST /req` while one is unclaimed gets 409 (fail fast, never silent overwrite).
+10. **Broker is not an open relay**: every API route (not `/health`) requires the `X-XDR-1: 1` client header (blocks blind cross-site form/fetch POSTs) + exact loopback `Host` (DNS-rebinding guard); responses echo CORS only to allowlisted origins (no `*`). Optional `XDR_BROKER_TOKEN` / `.token` file + `X-XDR-Token` header when configured.
 
 ## 6. Lessons ledger (symptom → root cause → fix)
 
@@ -101,7 +104,7 @@ Key payload shapes:
 
 ## 7. Dev workflow on this box
 
-- **Syntax gate:** `node --check userscript\x-discord-relay.user.js` after every edit. Non-negotiable — the edit tool has auto-repaired/mangled ranges several times; **re-read any region you edit** and never trust an unverified multi-hunk batch.
+- **Syntax gate:** `node tests/run.mjs` — syntax + invariant gate + unit suites, all green before every hand-over. (Bare minimum: `node --check userscript\x-discord-relay.user.js` after every edit — the edit tool has auto-repaired/mangled ranges several times; **re-read any region you edit** and never trust an unverified multi-hunk batch.)
 - **Regression gate:** run the Playwright e2e harness (dev box, outside this repo): `node scripts/xdr-e2e.mjs` from its own repo; it reads the userscript by absolute path (line 4 — keep pointing at `userscript/x-discord-relay.user.js` after moves). Expected: all PASS except the known artifact `ack received by X tab → consumed (toast shown instead)` — the toast line proving the round-trip is the real assertion. The harness STUB must provide `GM_listValues`/`GM_deleteValue` or startup throws.
 - **Extract-and-eval for content transforms** (learned 2026-08-18): intercepting `ma.sendMessage` in-page under Playwright is UNRELIABLE — the webpack runtime identity you wrap churns between `evaluate` calls (plain objects on `window` survive, Set references don't; scans that read 54 matches inside a tick read 0 from the next evaluate). To assert what the Discord side SENDS, regex-extract the shipped transform (e.g. the ping-append lines of `handleRelay`) and `eval` it in Node against captured payloads. Used by the preset tests; prefer it over in-page interception.
 - **Browser:** playwright-core with a local Chromium `executablePath` (dev box path in the harness). x.com articles render logged-out only after ~9s; Discord's login page is a valid lab for webpack capture (it has both runtimes).
@@ -113,6 +116,7 @@ Key payload shapes:
 ## 8. Diagnostics to give the user (or run via attached CDP)
 
 - `__xdrReport()` in the Discord tab console → `{leader, internals, matcher, mainRuntime, runtimes:[{c, m, main}]}`. `internals:false` + `mainRuntime:false` = capture problem; `runtimes` with one small `c` = probes landing wrong.
+- `__xdrXReport()` in the X tab console → `{mode, articles, splits, heals, queueDepth, testids, lastHover, sel, histLen, theme, menu, composer}`. `splits < articles` + growing `heals` = React wiping controls (healer covering); `testids` false = X renamed markup.
 - Console filter `xdr` in either tab — every state transition logs (`nav-verify failed`, `paste did not land`, `flushed=false`, `sent via dom-nav|dom|client(...)`).
 - Toast text carries the failure reason and `at:` path of the answering tab.
 

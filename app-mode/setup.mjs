@@ -1,5 +1,6 @@
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, copyFileSync, readdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -153,6 +154,26 @@ const upDir = join(vc, 'src', 'userplugins', 'xdrRelay');
 mkdirSync(upDir, { recursive: true });
 copyFileSync(pluginSrc, join(upDir, 'index.ts'));
 console.log('   Plugin copied to vencord/src/userplugins/xdrRelay');
+
+console.log('');
+console.log('== Step 2b: Broker token...');
+const tokenFile = join(brokerDir, '.token');
+let brokerToken = '';
+try { brokerToken = readFileSync(tokenFile, 'utf8').trim(); } catch {}
+if (!brokerToken) {
+  brokerToken = randomBytes(16).toString('hex');
+  writeFileSync(tokenFile, brokerToken + '\n', 'utf8');
+  console.log('   New token generated.');
+} else {
+  console.log('   Existing token reused.');
+}
+const copiedPlugin = join(upDir, 'index.ts');
+writeFileSync(copiedPlugin,
+  readFileSync(copiedPlugin, 'utf8').replace('default: ""', `default: "${brokerToken}"`),
+  'utf8');
+console.log('   Token baked into the copied plugin + picked up by the broker from .token.');
+console.log('   ALSO paste this token into the userscript once: set BROKER_TOKEN in runXSide to:');
+console.log(`   ${brokerToken}`);
 
 console.log('');
 console.log('== Step 3: Build + inject...');
