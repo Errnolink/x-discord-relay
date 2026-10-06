@@ -4,12 +4,17 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const brokerJs = join(root, 'app-mode', 'broker', 'xdr-broker.mjs');
 const H = { 'X-XDR-1': '1' };
+try {
+  const t = readFileSync(join(root, 'app-mode', 'broker', '.token'), 'utf8').trim();
+  if (t) H['X-XDR-Token'] = t;
+} catch { /* fresh clone without setup run: header-only mode */ }
 let portNo = 18770;
 const kids = [];
 after(() => { for (const k of kids) try { k.kill(); } catch {} });

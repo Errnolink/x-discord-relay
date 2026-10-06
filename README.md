@@ -137,12 +137,13 @@ app-mode/broker/xdr-broker.mjs         local HTTP bridge (no dependencies)
 app-mode/vencord-plugin/xdrRelay/      the Vencord userplugin (TypeScript)
 app-mode/setup.mjs                     cross-platform installer (also: --uninstall)
 app-mode/rebuild.mjs                   redeploy plugin after any Vencord rebuild/Installer run
+tests/                               `node tests/run.mjs` gate (syntax + invariants + units)
 AGENTS.md                              working context, hard invariants, lessons ledger
 issues.md                              external audit history
 ```
 
-- Syntax gate after every userscript edit: `node --check userscript/x-discord-relay.user.js`.
-- Userscript releases: bump `@version` **and both** `console.debug('[xdr] … active vX')` lines together (they have drifted before).
+- Gate before every hand-over: `node tests/run.mjs` (must print GATE GREEN).
+- Userscript releases: bump `@version` **and both** `console.debug('[xdr] … active vX')` lines together (they have drifted before; `check.mjs` enforces it).
 - Hard invariants (one-paste-per-request, nav-verify-before-paste, no `execCommand` insertText, no push-accessor hooks on Discord's webpack, live history reads) are listed in `AGENTS.md` — read it before touching the send path.
 
 ## Version history

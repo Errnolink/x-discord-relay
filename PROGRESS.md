@@ -13,4 +13,4 @@
 - [x] Docs (README + AGENTS) touch-up
 - [x] Final gates + commit (`bb6845d`, v1.10.0)
 
-Status: DONE — v1.10.0 shipped. Open for next round.
+Status: DONE — v1.10.0 live everywhere. Rebuild deployed, broker on token mode, Discord relaunched.
