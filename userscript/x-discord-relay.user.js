@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → Discord Relay (fixupx)
 // @namespace    xdr.local
-// @version      1.8.0
+// @version      1.9.2
 // @description  Send any X post to Discord as YOUR account through the official client — no token, no API. An X-styled bar under every post: pick server + channel, @ ping presets, one-click Send. Links auto-convert to fixupx.com.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -92,10 +92,100 @@
 
   // ---------------- X side ----------------
   function runXSide() {
-    const SEND_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
+    const SEND_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
     const TARGET_KEY = 'xdr.target';
+    const MODE_KEY = 'xdr.mode';
+    const BROKER = 'http://127.0.0.1:8765';
+
+    const CSS_TEXT = [
+      '.xdr-split{display:inline-flex;align-items:center;flex:0 0 auto;max-width:210px;background:transparent;border:none;opacity:.6;transition:opacity .12s ease}',
+      'article:hover .xdr-split,article:focus-within .xdr-split{opacity:1}',
+      'article[data-xdr-main] .xdr-split{opacity:1}',
+      '.xdr-go{display:flex;align-items:center;gap:4px;padding:4px 2px;cursor:pointer;background:transparent;border:none;font:400 13px system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--xdr-sub,#536471);white-space:nowrap;overflow:hidden}',
+      '.xdr-go:hover{color:#1d9bf0}',
+      '.xdr-go svg{flex:0 0 auto;color:inherit}',
+      '.xdr-go span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.xdr-go span.b{color:inherit;font-size:11px;font-weight:700}',
+      '.xdr-chev{display:flex;align-items:center;padding:4px 6px;cursor:pointer;background:transparent;border:none;color:var(--xdr-sub,#536471);font-size:9px;opacity:.45}',
+      'article:hover .xdr-chev,.xdr-split:hover .xdr-chev{opacity:.9}',
+      '.xdr-chev:hover{color:#1d9bf0;opacity:1}',
+      '.xdr-spin{width:12px;height:12px;flex:0 0 auto;border-radius:50%;border:2px solid rgba(29,155,240,.3);border-top-color:#1d9bf0;animation:xdrrot .7s linear infinite}',
+      '@keyframes xdrrot{to{transform:rotate(360deg)}}',
+      '.xdr-go.ok{color:#2ecc71}',
+      '.xdr-go.fail{color:#ff5c7a}',
+      '#xdrOverlay{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px}',
+      '#xdrOverlay[hidden]{display:none}',
+      '#xdrSheet{width:min(440px,94vw);max-height:82vh;overflow:auto;border-radius:16px;padding:6px;font:14px system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--xdr-bg,#fff);color:var(--xdr-fg,#0f1419);border:1px solid var(--xdr-line,#eff3f4);box-shadow:0 16px 48px rgba(0,0,0,.35);opacity:0;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease}',
+      '#xdrOverlay.open #xdrSheet{opacity:1;transform:none}',
+      '.xdr-head{display:flex;align-items:center;gap:8px;padding:10px 12px 6px;font-weight:800;font-size:15px}',
+      '.xdr-x{margin-left:auto;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;cursor:pointer;color:var(--xdr-sub,#536471);font-weight:800}',
+      '.xdr-x:hover{background:rgba(29,155,240,.1)}',
+      '.xdr-post{margin:2px 12px 8px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.4;color:var(--xdr-sub,#536471);background:rgba(29,155,240,.07);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow-wrap:anywhere}',
+      '.xdr-post a{color:#1d9bf0;text-decoration:none}',
+      '.xdr-sec{padding:2px 12px 8px}',
+      '.xdr-lbl{font-size:11.5px;font-weight:700;color:var(--xdr-sub,#536471);margin:6px 0 6px;text-transform:uppercase;letter-spacing:.04em}',
+      '.xdr-row{display:flex;gap:8px;flex-wrap:wrap}',
+      '.xdr-pick{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:9999px;cursor:pointer;border:1px solid var(--xdr-line,#eff3f4);font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden}',
+      '.xdr-pick:hover{background:rgba(29,155,240,.1)}',
+      '.xdr-pick span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.xdr-pick span.c{color:var(--xdr-sub,#536471);font-size:10px;margin-left:auto}',
+      '.xdr-seg{display:flex;border:1px solid var(--xdr-line,#eff3f4);border-radius:9999px;overflow:hidden}',
+      '.xdr-seg div{padding:8px 14px;cursor:pointer;font-weight:700;font-size:13px;color:var(--xdr-sub,#536471)}',
+      '.xdr-seg div.on{background:#1d9bf0;color:#fff}',
+      '.xdr-toggle{padding:8px 12px;border-radius:9999px;cursor:pointer;border:1px solid var(--xdr-line,#eff3f4);font-weight:700;font-size:13px}',
+      '.xdr-panel{margin:8px 0 0;border:1px solid var(--xdr-line,#eff3f4);border-radius:12px;padding:8px 10px}',
+      '.xdr-panel[hidden]{display:none}',
+      '.xdr-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}',
+      '.xdr-chip{padding:4px 12px;border-radius:9999px;cursor:pointer;font-weight:700;font-size:12px;border:1px solid var(--xdr-line,#eff3f4);color:var(--xdr-sub,#536471)}',
+      '.xdr-chip.on{background:#1d9bf0;border-color:#1d9bf0;color:#fff}',
+      '.xdr-urow{display:flex;align-items:center;gap:8px;padding:5px 2px;font-size:13px}',
+      '.xdr-urow .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}',
+      '.xdr-urow .i{color:var(--xdr-sub,#536471);font-size:11px;white-space:nowrap}',
+      '.xdr-urow .rm{cursor:pointer;font-weight:800;font-size:12px;padding:2px 6px;border-radius:6px;color:var(--xdr-sub,#536471)}',
+      '.xdr-urow .rm:hover{color:#ff5c7a;background:rgba(255,92,122,.1)}',
+      '.xdr-add{display:flex;gap:6px;margin-top:8px}',
+      '.xdr-add input{flex:1;min-width:0;padding:7px 10px;border-radius:8px;border:1px solid var(--xdr-line,#eff3f4);background:transparent;color:var(--xdr-fg,#0f1419);font-size:13px;outline:none}',
+      '.xdr-add input:focus{border-color:#1d9bf0}',
+      '.xdr-btn2{padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;color:#1d9bf0;white-space:nowrap}',
+      '.xdr-btn2:hover{background:rgba(29,155,240,.1)}',
+      '.xdr-btn2.danger{color:#ff5c7a}',
+      '.xdr-foot{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px 12px}',
+      '.xdr-cancel{padding:9px 18px;border-radius:9999px;cursor:pointer;font-weight:700;font-size:14px;color:var(--xdr-fg,#0f1419)}',
+      '.xdr-cancel:hover{background:rgba(29,155,240,.1)}',
+      '.xdr-send{padding:9px 22px;border-radius:9999px;cursor:pointer;font-weight:800;font-size:14px;background:#1d9bf0;color:#fff;border:none}',
+      '.xdr-send:hover{background:#1a8cd8}',
+      '.xdr-send.off{opacity:.45;pointer-events:none}',
+      '#xdrMenu{position:fixed;z-index:2147483647;min-width:200px;max-width:280px;max-height:320px;overflow:auto;padding:4px;border-radius:14px;font:13px system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--xdr-bg,#fff);color:var(--xdr-fg,#0f1419);border:1px solid var(--xdr-line,#eff3f4);box-shadow:0 8px 28px rgba(0,0,0,.3);opacity:0;transform:translateY(-2px);transition:opacity .12s ease,transform .12s ease}',
+      '#xdrMenu[hidden]{display:none}',
+      '#xdrMenu.open{opacity:1;transform:none}',
+      '.xdr-mi{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}',
+      '.xdr-mi:hover,.xdr-mi.hot{background:rgba(29,155,240,.12)}',
+      '.xdr-mi .s{color:var(--xdr-sub,#536471);font-size:11px;margin-left:auto;padding-left:8px;white-space:nowrap}',
+      '.xdr-mi .k{color:#1d9bf0;font-weight:800}',
+      'html[data-xdr-theme="dark"]{--xdr-bg:#1e2126;--xdr-fg:#e7e9ea;--xdr-sub:#71767b;--xdr-line:#2f3336}',
+      'html[data-xdr-theme="light"]{--xdr-bg:#ffffff;--xdr-fg:#0f1419;--xdr-sub:#536471;--xdr-line:#eff3f4}'
+    ].join('\n');
+
+    function ensureCss() {
+      if (document.getElementById('xdrCss')) return;
+      const st = document.createElement('style');
+      st.id = 'xdrCss';
+      st.textContent = CSS_TEXT;
+      (document.head || document.documentElement).appendChild(st);
+    }
+
+    function applyTheme() {
+      let dark = false;
+      try {
+        const m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
+        if (m && m.length >= 3) dark = (+m[0] * .299 + +m[1] * .587 + +m[2] * .114) < 128;
+        else dark = matchMedia('(prefers-color-scheme: dark)').matches;
+      } catch (e) { dark = matchMedia('(prefers-color-scheme: dark)').matches; }
+      document.documentElement.setAttribute('data-xdr-theme', dark ? 'dark' : 'light');
+    }
 
     let lastTweetUrl = null;
+    let lastTweetText = '';
 
     function getPingData() {
       try {
@@ -105,31 +195,8 @@
       return { presets: { Default: [] }, active: 'Default', on: true };
     }
     function setPingData(d) { gset(PING_PRESET_KEY, JSON.stringify(d)); }
-    function getActiveUsers() {
-      const d = getPingData();
-      return (d.presets[d.active] || []);
-    }
     function isPingOn() { return getPingData().on !== false; }
-    function addPingUser(preset, id, label) {
-      id = String(id).trim();
-      if (!id || !/^\d{17,20}$/.test(id)) return false;
-      const d = getPingData();
-      if (!d.presets[preset]) d.presets[preset] = [];
-      if (d.presets[preset].some(u => u.id === id)) return false;
-      d.presets[preset].push({ id, label: (label || '').trim() || id });
-      setPingData(d);
-      return true;
-    }
-    function removePingUser(preset, id) {
-      const d = getPingData();
-      if (!d.presets[preset]) return;
-      d.presets[preset] = d.presets[preset].filter(u => u.id !== id);
-      setPingData(d);
-    }
 
-    // permalink of a tweet <article>: prefer the anchor wrapping the <time> element
-    // (logged-in layout); logged-out layout has plain text timestamps, so fall back
-    // to the first anchor whose href is exactly /user/status/id
     function articleUrl(article) {
       if (!article) return null;
       const time = article.querySelector('a[href*="/status/"] time');
@@ -144,103 +211,83 @@
       if (!a) return null;
       try { return new URL(a.getAttribute('href'), location.origin).href; } catch (e) { return null; }
     }
-
-    function history() {
-      try { const h = JSON.parse(gget(HIST_KEY, '[]')); return Array.isArray(h) ? h : []; } catch (e) { return []; }
+    function articleSnippet(article) {
+      try {
+        const t = (article.querySelector('[data-testid="tweetText"]') || article).innerText || '';
+        const s = t.replace(/\s+/g, ' ').trim();
+        return s.length > 140 ? s.slice(0, 140) + '…' : s;
+      } catch (e) { return ''; }
     }
+
+    const store = {
+      sel: null,
+      histV: 0,
+      hist: [],
+      readHist() {
+        try { const h = JSON.parse(gget(HIST_KEY, '[]')); this.hist = Array.isArray(h) ? h : []; }
+        catch (e) { this.hist = []; }
+        return this.hist;
+      },
+      servers() {
+        const out = [];
+        const seen = new Set();
+        for (const hh of this.hist) {
+          const g = hh.guild || 'other';
+          if (seen.has(g)) continue;
+          seen.add(g);
+          out.push({ g, label: hh.gname || (g === '@me' ? 'Direct Messages' : g === 'other' ? 'Other' : 'Server …' + String(g).slice(-4)) });
+        }
+        return out;
+      },
+      channelsOf(g) { return this.hist.filter(hh => (hh.guild || 'other') === g); }
+    };
+    store.readHist();
+    if (!store.sel) {
+      let t0 = null;
+      try { const t = JSON.parse(gget(TARGET_KEY, 'null')); if (t && t.id) t0 = t; } catch (e) {}
+      if (!t0) t0 = store.hist[0] || null;
+      const s0 = (t0 && t0.guild && store.hist.some(hh => (hh.guild || 'other') === t0.guild)) ? t0.guild : '__current';
+      store.sel = {
+        server: s0,
+        channel: s0 === '__current' ? null
+          : (store.hist.find(hh => t0 && hh.id === t0.id && (hh.guild || 'other') === s0) || store.hist.find(hh => (hh.guild || 'other') === s0) || null)
+      };
+    }
+
     function chanLabel(hh) {
       if (!hh) return 'open channel';
       return (hh.name && hh.name[0] === '#') ? hh.name
         : ((hh.guild === '@me') ? (hh.name || hh.id) : '#' + (hh.name || hh.id));
     }
+    function srvLabel(g) {
+      if (g === '__current') return 'Open tab';
+      const s = store.servers().find(x => x.g === g);
+      return s ? s.label : 'Server';
+    }
+    function currentEntry() {
+      return store.sel.server === '__current' ? null : store.sel.channel;
+    }
+    function persistTarget() {
+      const t = currentEntry();
+      if (t) gset(TARGET_KEY, JSON.stringify(t)); else gset(TARGET_KEY, 'null');
+    }
+    function reselect() {
+      if (store.sel.server !== '__current' && store.sel.channel) {
+        const fresh = store.hist.find(hh => hh.id === store.sel.channel.id);
+        if (fresh) store.sel.channel = fresh;
+      }
+    }
+
     function setSending(v) {
       runXSide.sending = v;
-      for (const b of (runXSide.bars || new Set())) { if (b.setSending) b.setSending(v); }
+      const s = document.getElementById('xdrSend');
+      if (s) {
+        s.classList.toggle('off', !!v);
+        s.textContent = v ? 'Sending…' : ('Send to ' + (currentEntry() ? chanLabel(currentEntry()) : 'open channel'));
+      }
     }
 
-    function styleEl(el, css) { Object.keys(css).forEach(p => el.style.setProperty(p, css[p])); }
-
-    // match X's light/dark theme so the bar blends in
-    function xTheme() {
-      try {
-        const m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-        if (m && m.length >= 3) return (+m[0] * .299 + +m[1] * .587 + +m[2] * .114) < 128 ? 'dark' : 'light';
-      } catch (e) {}
-      return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    }
-
-    // server icons: x.com CSP blocks cdn.discordapp.com in <img>, so fetch the
-    // bytes via GM_xmlhttpRequest and paint them into a canvas instead.
-    const iconCache = new Map();
-    function iconBitmap(url) {
-      if (iconCache.has(url)) return Promise.resolve(iconCache.get(url));
-      return new Promise(resolve => {
-        let settled = false;
-        const done = v => { if (!settled) { settled = true; if (v) iconCache.set(url, v); resolve(v); } };
-        const fetchLive = () => {
-          try {
-            GM_xmlhttpRequest({
-              method: 'GET', url, responseType: 'blob', timeout: 8000,
-              onload: r => {
-                const b = r.response;
-                if (!b || !b.size) return done(null);
-                createImageBitmap(b).then(bm => {
-                  done(bm);
-                  try { // persist as data URL for future page loads (24h TTL)
-                    const fr = new FileReader();
-                    fr.onload = () => {
-                      try {
-                        const store = JSON.parse(gget('xdr.icons', '{}')) || {};
-                        store[url] = { d: fr.result, ts: Date.now() };
-                        gset('xdr.icons', JSON.stringify(store));
-                      } catch (e) {}
-                    };
-                    fr.readAsDataURL(b);
-                  } catch (e) {}
-                }, () => done(null));
-              },
-              onerror: () => done(null),
-              ontimeout: () => done(null)
-            });
-          } catch (e) { done(null); }
-        };
-        try { // stored data URL?
-          const store = JSON.parse(gget('xdr.icons', '{}')) || {};
-          const e2 = store[url];
-          if (e2 && e2.d && Date.now() - (e2.ts || 0) < 86400000) {
-            fetch(e2.d).then(r => r.blob()).then(b => createImageBitmap(b)).then(done, fetchLive);
-            return;
-          }
-        } catch (e) {}
-        fetchLive();
-      });
-    }
-    function paintIcon(holder, hh, size) {
-      size = size || 22;
-      if (!hh || !hh.gicon) return;
-      iconBitmap(hh.gicon).then(bm => {
-        if (!bm || !holder.isConnected) return;
-        const cv = document.createElement('canvas');
-        cv.width = size; cv.height = size;
-        cv.getContext('2d').drawImage(bm, 0, 0, size, size);
-        cv.style.setProperty('border-radius', '50%');
-        holder.replaceChildren(cv);
-      });
-    }
-
-    // ---- last send target (persisted) ----
-    function getTarget() {
-      try { const t = JSON.parse(gget(TARGET_KEY, 'null')); if (t && t.id) return t; } catch (e) {}
-      return history()[0] || null;
-    }
-
-    // ---- desktop-app transport (Vencord plugin via local broker) ----
-    // GM storage can't cross browser↔app; in App mode the request goes over
-    // HTTP to the local broker (127.0.0.1:8765), which the Vencord plugin
-    // polls. Tab mode (GM storage) stays the default and is untouched.
-    const MODE_KEY = 'xdr.mode';
-    const BROKER = 'http://127.0.0.1:8765';
-    let appAlive = null; // null = unchecked, true/false = last health result
+    let appAlive = null;
     function getMode() { return gget(MODE_KEY, 'tab') === 'app' ? 'app' : 'tab'; }
     function gmXhr() { return (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest : null; }
     function brokerHealth(cb) {
@@ -252,52 +299,68 @@
         x({ method: 'GET', url: BROKER + '/health', timeout: 2500, onload: r => fin(r.status === 200), onerror: () => fin(false), ontimeout: () => fin(false) });
       } catch (e) { fin(false); }
     }
-    function appRelay(payload) {
+    function appRelay(payload, cb) {
       const x = gmXhr();
       if (!x) { toast('App mode needs Tampermonkey GM_xmlhttpRequest', 'err'); return; }
       const ackUrl = BROKER + '/ack/' + payload.id;
+      const finish = ok => { setSending(false); try { if (cb) cb(ok); } catch (e) {} };
       x({
         method: 'POST', url: BROKER + '/req', timeout: 4000,
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify(payload),
         onload: r => {
-          if (r.status !== 200) { setSending(false); toast('Broker rejected request: ' + r.responseText, 'err'); return; }
+          if (r.status !== 200) { toast('Broker rejected request: ' + r.responseText, 'err'); finish(false); return; }
           const t0 = Date.now();
-          const iv = setInterval(() => {
+          let lastStart = 0;
+          const reAttempt = () => {
+            if (Date.now() - lastStart < 400) setTimeout(attempt, 250);
+            else attempt();
+          };
+          const attempt = () => {
+            lastStart = Date.now();
+            const remain = 12000 - (Date.now() - t0);
+            if (remain < 1000) {
+              toast('Discord app did not answer. Is the xdrRelay plugin enabled in Vencord?', 'err');
+              finish(false);
+              return;
+            }
             x({
-              method: 'GET', url: ackUrl, timeout: 2500,
+              method: 'GET', url: ackUrl + '?wait=' + Math.min(10000, remain - 500), timeout: 15000,
               onload: rr => {
                 if (rr.status === 200 && rr.responseText) {
-                  clearInterval(iv);
                   let ack = {}; try { ack = JSON.parse(rr.responseText); } catch (e) {}
+                  if (ack.pending) { reAttempt(); return; }
                   if (ack.ok) toast('Sent to ' + (ack.chName || ('channel ' + ack.ch)) + ' ✓ via app' + (ack.via === 'app-verified' ? '' : ' (unverified)'), 'ok');
                   else toast('Discord app: ' + (ack.err || 'unknown error'), 'err');
-                  setSending(false);
+                  finish(!!ack.ok);
                 } else if (Date.now() - t0 > 12000) {
-                  clearInterval(iv);
                   toast('Discord app did not answer. Is the xdrRelay plugin enabled in Vencord?', 'err');
-                  setSending(false);
-                }
+                  finish(false);
+                } else reAttempt();
               },
-              onerror: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker unreachable mid-poll', 'err'); setSending(false); } },
-              ontimeout: () => { if (Date.now() - t0 > 12000) { clearInterval(iv); toast('Broker timeout mid-poll', 'err'); setSending(false); } }
+              onerror: () => { if (Date.now() - t0 > 12000) { toast('Broker unreachable mid-poll', 'err'); finish(false); } else reAttempt(); },
+              ontimeout: () => { if (Date.now() - t0 > 12000) { toast('Broker timeout mid-poll', 'err'); finish(false); } else reAttempt(); }
             });
-          }, 500);
+          };
+          attempt();
         },
-        onerror: () => { setSending(false); toast('Broker unreachable — is xdr-broker running?', 'err'); },
-        ontimeout: () => { setSending(false); toast('Broker timeout — is xdr-broker running?', 'err'); }
+        onerror: () => { toast('Broker unreachable — is xdr-broker running?', 'err'); finish(false); },
+        ontimeout: () => { toast('Broker timeout — is xdr-broker running?', 'err'); finish(false); }
       });
     }
-    function setTarget(t) { gset(TARGET_KEY, JSON.stringify(t)); }
 
-    function relay(rawUrl, target, ping) {
+    function relay(rawUrl, target, ping, cb) {
       setSending(true);
+      const doneCb = ok => { setSending(false); try { if (cb) cb(ok); } catch (e) {} };
       const url = rawUrl || lastTweetUrl || location.href;
       const link = fixupLink(url);
-      if (!link) { toast('No post permalink found (hover a post first, or use its timestamp link)', 'err'); return; }
-
+      if (!link) { toast('No post permalink found (hover a post first, or use its timestamp link)', 'err'); doneCb(false); return; }
       const id = (crypto.randomUUID ? crypto.randomUUID() : 'r' + Date.now() + Math.random()).replace(/[^a-z0-9]/gi, '');
-      const pingUsers = ping ? getActiveUsers().map(u => u.id) : [];
+      let pingUsers = [];
+      try {
+        const d = getPingData();
+        if (ping) pingUsers = (d.presets[d.active] || []).map(u => u.id);
+      } catch (e) {}
       const payload = {
         id, link, ts: Date.now(),
         ch: target ? target.id : null,
@@ -307,23 +370,18 @@
         pingUsers
       };
       toast('Relaying to ' + (target ? chanLabel(target) : 'open channel') + (pingUsers.length ? ' +' + pingUsers.length + ' pings' : '') + ' …');
-
       if (getMode() === 'app') {
-        // desktop-app transport: hand off to the broker (and to the Vencord
-        // plugin behind it). No GM keys are written for this request.
         if (appAlive === false) {
-          toast('App mode: broker not reachable. Start xdr-broker, or click the mode chip to switch back to Tab mode.', 'err');
-          setSending(false);
+          toast('App mode: broker not reachable. Start xdr-broker, or switch back to Tab mode.', 'err');
+          doneCb(false);
           return;
         }
-        appRelay(payload);
+        appRelay(payload, cb);
         return;
       }
-
       gset(ackKey(id), '');
       gset(lockKey(id), '');
       gset(REQ_KEY, JSON.stringify(payload));
-
       const key = ackKey(id);
       const t0 = Date.now();
       const iv = setInterval(() => {
@@ -333,96 +391,123 @@
           let ack = {}; try { ack = JSON.parse(raw); } catch (e) {}
           if (ack.ok) toast('Sent to ' + (ack.chName || ('channel ' + ack.ch)) + ' ✓', 'ok');
           else toast('Discord tab' + (ack.at ? ' (' + ack.at + ')' : '') + ': ' + (ack.err || 'unknown error'), 'err');
-          gset(key, ''); gset(lockKey(id), ''); setSending(false);
+          gset(key, ''); gset(lockKey(id), ''); doneCb(!!ack.ok);
         } else if (Date.now() - t0 > 12000) {
           clearInterval(iv);
           toast('No Discord tab answered. Open discord.com in a browser tab and click into a channel first.', 'err');
-          gset(key, ''); gset(lockKey(id), ''); setSending(false);
+          gset(key, ''); gset(lockKey(id), ''); doneCb(false);
         }
       }, 120);
     }
 
-    // hover tracking (fallback targeting when bars can't be built)
     document.addEventListener('mouseover', e => {
       const el = e.target;
       if (!el || !el.closest) return;
       const art = el.closest('article[data-testid="tweet"]') || el.closest('article');
-      if (art) { const u = articleUrl(art); if (u) lastTweetUrl = u; }
+      if (art) {
+        const u = articleUrl(art);
+        if (u) { lastTweetUrl = u; lastTweetText = articleSnippet(art); }
+      }
     }, true);
 
-    // ---- dropdown popover: ONE per page (not per bar), X-themed ----
-    let pop = null;
-    function closePop() { if (pop) { pop.remove(); pop = null; } }
-    let popSuppress = 0;
-    function openPop(anchor, items, onPick) {
-      if (Date.now() < popSuppress) return; // same-chip click: toggle closed, don't reopen
-      closePop();
-      const dark = xTheme() === 'dark';
-      const C = dark
-        ? { text: '#e7e9ea', sub: '#71767b', line: '#2f3336', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0' }
-        : { text: '#0f1419', sub: '#536471', line: '#eff3f4', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0' };
-      const p = document.createElement('div');
-      styleEl(p, {
-        position: 'fixed', 'z-index': '2147483646', 'min-width': '180px', 'max-width': '260px',
-        padding: '4px', background: dark ? '#1e2126' : '#fff',
-        border: '1px solid ' + C.line, 'border-radius': '14px',
-        'box-shadow': '0 8px 28px rgba(0,0,0,' + (dark ? '.6' : '.25') + ')',
-        font: '13px system-ui, -apple-system, "Segoe UI", sans-serif'
-      });
-      items.forEach(it => {
+    let menu = null;
+    let menuSuppress = 0;
+    function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+    function openMenu(anchor, items, onPick) {
+      if (Date.now() < menuSuppress) return;
+      closeMenu();
+      const m = document.createElement('div');
+      m.id = 'xdrMenu';
+      m.setAttribute('role', 'listbox');
+      m.hidden = true;
+      let hot = Math.max(0, items.findIndex(it => it.selected));
+      items.forEach((it, i) => {
         const row = document.createElement('div');
-        styleEl(row, { display: 'flex', 'align-items': 'center', gap: '8px',
-          padding: '8px 10px', 'border-radius': '8px', cursor: 'pointer', color: C.text });
-        const ic = document.createElement('div');
-        styleEl(ic, { width: '20px', height: '20px', 'border-radius': '50%', overflow: 'hidden',
-          display: 'flex', 'align-items': 'center', 'justify-content': 'center', flex: '0 0 20px',
-          'font-size': '10px', 'font-weight': '700', color: '#fff' });
-        const seed = it.iconSeed || it.label || '?';
-        const hue = [...seed].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
-        ic.style.setProperty('background', 'hsl(' + hue + ', 45%, 42%)');
-        ic.textContent = (seed[0] || '#').toUpperCase();
-        if (it.entry) paintIcon(ic, it.entry, 20);
+        row.className = 'xdr-mi' + (i === hot ? ' hot' : '');
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', it.selected ? 'true' : 'false');
+        row.tabIndex = -1;
         const lbl = document.createElement('span');
         lbl.textContent = it.label;
-        styleEl(lbl, { 'font-weight': '600', overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' });
-        row.appendChild(ic);
         row.appendChild(lbl);
         if (it.sub) {
           const sub = document.createElement('span');
+          sub.className = 's';
           sub.textContent = it.sub;
-          styleEl(sub, { color: C.sub, 'font-size': '11px', 'margin-left': 'auto', 'padding-left': '8px', 'white-space': 'nowrap' });
           row.appendChild(sub);
         }
         if (it.selected) {
-          const tick = document.createElement('span');
-          tick.textContent = '✓';
-          styleEl(tick, { color: C.accent, 'font-weight': '800', 'margin-left': it.sub ? '6px' : 'auto' });
-          row.appendChild(tick);
+          const k = document.createElement('span');
+          k.className = 'k';
+          k.textContent = ' ✓';
+          row.appendChild(k);
         }
-        row.addEventListener('mouseenter', () => row.style.setProperty('background', C.hover));
-        row.addEventListener('mouseleave', () => row.style.setProperty('background', 'transparent'));
-        row.addEventListener('click', ev => { ev.stopPropagation(); closePop(); onPick(it); });
-        p.appendChild(row);
+        row.addEventListener('click', ev => { ev.stopPropagation(); closeMenu(); onPick(it); });
+        row.addEventListener('mousemove', () => {
+          m.querySelectorAll('.xdr-mi').forEach(r => r.classList.remove('hot'));
+          row.classList.add('hot');
+          hot = i;
+        });
+        m.appendChild(row);
       });
-      document.documentElement.appendChild(p);
+      document.documentElement.appendChild(m);
       const r = anchor.getBoundingClientRect();
-      const pw = p.getBoundingClientRect();
-      let x = Math.min(Math.max(8, r.left), innerWidth - pw.width - 8);
+      m.hidden = false;
+      requestAnimationFrame(() => m.classList.add('open'));
+      const mw = m.offsetWidth;
+      const mh = m.offsetHeight;
+      let x = Math.min(Math.max(8, r.left), innerWidth - mw - 8);
       let y = r.bottom + 6;
-      if (y + pw.height > innerHeight - 8) y = Math.max(8, r.top - pw.height - 6);
-      p.style.setProperty('left', x + 'px');
-      p.style.setProperty('top', y + 'px');
-      pop = p;
-      pop.__xdrAnchor = anchor;
+      if (y + mh > innerHeight - 8) y = Math.max(8, r.top - mh - 6);
+      m.style.left = x + 'px';
+      m.style.top = y + 'px';
+      menu = m;
+      menu.__xdrAnchor = anchor;
+      let query = '';
+      let qTimer = 0;
+      menu.__xdrKey = e => {
+        const rows = Array.from(m.querySelectorAll('.xdr-mi'));
+        if (e.key === 'Escape') { e.preventDefault(); closeMenu(); anchor.focus(); }
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          hot = (hot + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+          rows.forEach(rr => rr.classList.remove('hot'));
+          if (rows[hot]) { rows[hot].classList.add('hot'); rows[hot].scrollIntoView({ block: 'nearest' }); }
+        }
+        else if (e.key === 'Enter') { e.preventDefault(); closeMenu(); onPick(items[hot]); }
+        else if (e.key.length === 1) {
+          query += e.key.toLowerCase();
+          clearTimeout(qTimer);
+          qTimer = setTimeout(() => { query = ''; }, 600);
+          const j = items.findIndex(it => (it.label || '').toLowerCase().startsWith(query));
+          if (j >= 0) {
+            hot = j;
+            rows.forEach(rr => rr.classList.remove('hot'));
+            if (rows[j]) { rows[j].classList.add('hot'); rows[j].scrollIntoView({ block: 'nearest' }); }
+          }
+        }
+      };
     }
     document.addEventListener('mousedown', e => {
-      if (pop && !(e.target && pop.contains(e.target))) {
-        const wasAnchor = !!(pop.__xdrAnchor && pop.__xdrAnchor.contains(e.target));
-        closePop();
-        if (wasAnchor) popSuppress = Date.now() + 250;
+      if (menu && !(e.target && menu.contains(e.target))) {
+        const wasAnchor = !!(menu.__xdrAnchor && menu.__xdrAnchor.contains(e.target));
+        closeMenu();
+        if (wasAnchor) menuSuppress = Date.now() + 250;
+      }
+      const ov = document.getElementById('xdrOverlay');
+      if (ov && !ov.hidden && e.target === ov) closeComposer();
+    }, true);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        if (menu && menu.__xdrKey) menu.__xdrKey(e);
+        else closeComposer();
+      } else if (menu && menu.__xdrKey && ['ArrowDown', 'ArrowUp', 'Enter'].includes(e.key)) {
+        menu.__xdrKey(e);
+      } else if (menu && menu.__xdrKey && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.target && e.target.getAttribute && e.target.getAttribute('data-xdr-input')) return;
+        menu.__xdrKey(e);
       }
     }, true);
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); }, true);
     ['keydown', 'keyup', 'keypress'].forEach(evt =>
       W.addEventListener(evt, e => {
         if (!e.target || !e.target.getAttribute || !e.target.getAttribute('data-xdr-input')) return;
@@ -433,624 +518,614 @@
         }
         e.stopPropagation();
       }, true));
-    window.addEventListener('scroll', closePop, true);
+    window.addEventListener('scroll', closeMenu, true);
 
-    // ---- send bar under every post: [icon] server ▾  channel ▾  @  Send ----
-    function buildBar(article) {
-      const dark = xTheme() === 'dark';
-      const C = dark
-        ? { text: '#e7e9ea', sub: '#71767b', line: '#2f3336', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0' }
-        : { text: '#0f1419', sub: '#536471', line: '#eff3f4', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0' };
+    const composer = { link: null, editOpen: false, delArm: null };
 
-      const bar = document.createElement('div');
-      styleEl(bar, {
-        display: 'flex', 'align-items': 'center', 'flex-wrap': 'wrap', gap: '6px',
-        'margin-top': '6px', padding: '6px 4px 2px', 'border-top': '1px solid ' + C.line,
-        font: '13px system-ui, -apple-system, "Segoe UI", sans-serif', color: C.sub,
-        cursor: 'default'
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+
+    function buildComposer() {
+      if (document.getElementById('xdrOverlay')) return;
+      const ov = el('div');
+      ov.id = 'xdrOverlay';
+      ov.hidden = true;
+      const sheet = el('div');
+      sheet.id = 'xdrSheet';
+      sheet.setAttribute('role', 'dialog');
+      sheet.setAttribute('aria-label', 'Send to Discord');
+      const head = el('div', 'xdr-head', 'Send to Discord');
+      const x = el('div', 'xdr-x', '✕');
+      x.setAttribute('role', 'button');
+      x.setAttribute('aria-label', 'Close');
+      x.addEventListener('click', ev => { ev.stopPropagation(); closeComposer(); });
+      head.appendChild(x);
+      sheet.appendChild(head);
+      const post = el('div', 'xdr-post');
+      post.id = 'xdrPost';
+      sheet.appendChild(post);
+      const sec1 = el('div', 'xdr-sec');
+      sec1.appendChild(el('div', 'xdr-lbl', 'Channel'));
+      const row1 = el('div', 'xdr-row');
+      const srv = el('div', 'xdr-pick');
+      srv.id = 'xdrSrv';
+      srv.setAttribute('role', 'button');
+      srv.setAttribute('tabindex', '0');
+      const ch = el('div', 'xdr-pick');
+      ch.id = 'xdrCh';
+      ch.setAttribute('role', 'button');
+      ch.setAttribute('tabindex', '0');
+      row1.appendChild(srv);
+      row1.appendChild(ch);
+      sec1.appendChild(row1);
+      sheet.appendChild(sec1);
+      const sec2 = el('div', 'xdr-sec');
+      sec2.appendChild(el('div', 'xdr-lbl', 'Options'));
+      const row2 = el('div', 'xdr-row');
+      const seg = el('div', 'xdr-seg');
+      const tabB = el('div', null, 'Tab');
+      tabB.id = 'xdrModeTab';
+      tabB.setAttribute('role', 'button');
+      tabB.title = 'Send via Discord browser tab';
+      const appB = el('div', null, 'App');
+      appB.id = 'xdrModeApp';
+      appB.setAttribute('role', 'button');
+      appB.title = 'Send via Discord desktop app (Vencord plugin)';
+      seg.appendChild(tabB);
+      seg.appendChild(appB);
+      const preset = el('div', 'xdr-pick');
+      preset.id = 'xdrPreset';
+      preset.setAttribute('role', 'button');
+      preset.setAttribute('tabindex', '0');
+      preset.title = 'Ping preset — click to switch';
+      const pingT = el('div', 'xdr-toggle');
+      pingT.id = 'xdrPingT';
+      pingT.setAttribute('role', 'button');
+      pingT.title = 'Toggle pings on/off';
+      const editB = el('div', 'xdr-toggle', 'Edit');
+      editB.id = 'xdrEdit';
+      editB.setAttribute('role', 'button');
+      editB.title = 'Edit ping presets';
+      row2.appendChild(seg);
+      row2.appendChild(preset);
+      row2.appendChild(pingT);
+      row2.appendChild(editB);
+      sec2.appendChild(row2);
+      const panel = el('div', 'xdr-panel');
+      panel.id = 'xdrPanel';
+      panel.hidden = true;
+      sec2.appendChild(panel);
+      sheet.appendChild(sec2);
+      const foot = el('div', 'xdr-foot');
+      const cancel = el('div', 'xdr-cancel', 'Cancel');
+      cancel.setAttribute('role', 'button');
+      cancel.addEventListener('click', ev => { ev.stopPropagation(); closeComposer(); });
+      const send = el('button', 'xdr-send', 'Send');
+      send.id = 'xdrSend';
+      send.setAttribute('type', 'button');
+      send.addEventListener('click', ev => {
+        ev.stopPropagation();
+        relay(composer.link, currentEntry(), isPingOn());
+        closeComposer();
       });
-      bar.setAttribute('data-xdr-bar', '1');
-      // keep X from treating bar interactions as post clicks
+      foot.appendChild(cancel);
+      foot.appendChild(send);
+      sheet.appendChild(foot);
+      ov.appendChild(sheet);
       ['mousedown', 'click', 'mouseup', 'dblclick', 'auxclick'].forEach(evt =>
-        bar.addEventListener(evt, e => e.stopPropagation()));
+        sheet.addEventListener(evt, e => e.stopPropagation()));
+      document.documentElement.appendChild(ov);
 
-      const hist = history(); // build-time snapshot only used for initial sel
-      const target = getTarget();
-
-      const servers = [];
-      const seenG = new Set();
-      for (const hh of hist) {
-        const g = hh.guild || 'other';
-        if (seenG.has(g)) continue;
-        seenG.add(g);
-        servers.push({ g, label: hh.gname || (g === '@me' ? 'Direct Messages' : g === 'other' ? 'Other' : 'Server …' + String(g).slice(-4)) });
-      }
-
-      const chip = document.createElement('div');
-      styleEl(chip, { width: '18px', height: '18px', 'border-radius': '50%', overflow: 'hidden',
-        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-        'font-size': '10px', 'font-weight': '700', color: '#fff', flex: '0 0 18px' });
-
-      function refreshChip(entry) {
-        if (!entry) {
-          chip.style.setProperty('background', 'hsl(220, 45%, 42%)');
-          chip.textContent = '➤';
+      srv.addEventListener('click', () => {
+        const items = [{ key: '__current', label: 'Open tab', sub: 'current channel', selected: store.sel.server === '__current' }];
+        store.servers().forEach(s => items.push({
+          key: s.g, label: s.label, sub: store.channelsOf(s.g).length + ' ch',
+          selected: store.sel.server === s.g
+        }));
+        openMenu(srv, items, it => {
+          store.sel.server = it.key;
+          store.sel.channel = it.key === '__current' ? null : (store.channelsOf(it.key)[0] || null);
+          persistTarget();
+          refreshComposer();
+        });
+      });
+      ch.addEventListener('click', () => {
+        if (store.sel.server === '__current') {
+          openMenu(ch, [{ key: 'current', label: 'currently open channel', selected: true }], () => {});
           return;
         }
-        const seed = entry.gname || entry.name || entry.id || '?';
-        const hue = [...seed].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
-        chip.style.setProperty('background', 'hsl(' + hue + ', 45%, 42%)');
-        chip.textContent = (seed[0] || '#').toUpperCase();
-        paintIcon(chip, entry, 18);
-      }
-
-      const chipStyle = { display: 'flex', 'align-items': 'center', gap: '6px',
-        padding: '4px 12px', 'border-radius': '9999px', cursor: 'pointer',
-        border: '1px solid ' + C.line, color: C.text, 'font-weight': '700',
-        'font-size': '13px', 'max-width': '180px', background: 'transparent' };
-      function makeChip(getLabel, onOpen) {
-        const b = document.createElement('div');
-        b.setAttribute('role', 'button');
-        styleEl(b, chipStyle);
-        const lbl = document.createElement('span');
-        lbl.textContent = getLabel();
-        styleEl(lbl, { overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' });
-        const car = document.createElement('span');
-        car.textContent = '▾';
-        styleEl(car, { color: C.sub, 'font-size': '10px' });
-        b.appendChild(lbl); b.appendChild(car);
-        b.addEventListener('mouseenter', () => b.style.setProperty('background', C.hover));
-        b.addEventListener('mouseleave', () => b.style.setProperty('background', 'transparent'));
-        b.addEventListener('click', ev => { ev.stopPropagation(); onOpen(b, lbl); });
-        b.refresh = () => { lbl.textContent = getLabel(); };
-        return b;
-      }
-
-      // selection state — SHARED across every bar (module-level), so changing
-      // the target on one post's bar updates them all
-      if (!runXSide.sel) {
-        const t0 = getTarget();
-        const h0 = history();
-        const s0 = (t0 && t0.guild && h0.some(hh => (hh.guild || 'other') === t0.guild)) ? t0.guild : '__current';
-        runXSide.sel = {
-          server: s0,
-          channel: s0 === '__current' ? null
-            : (h0.find(hh => hh.id === t0.id && (hh.guild || 'other') === s0) || h0.find(hh => (hh.guild || 'other') === s0) || null)
-        };
-      }
-      const sel = runXSide.sel;
-      if (!runXSide.bars) runXSide.bars = new Set();
-      runXSide.bars.add(bar);
-
-      function channelsOf(g) { return history().filter(hh => (hh.guild || 'other') === g); } // LIVE read
-      function chanLabel(hh) {
-        if (!hh) return 'open channel';
-        return (hh.name && hh.name[0] === '#') ? hh.name
-          : ((hh.guild === '@me') ? (hh.name || hh.id) : '#' + (hh.name || hh.id));
-      }
-      function srvLabel(g) {
-        if (g === '__current') return 'Open tab';
-        const s = servers.find(x => x.g === g);
-        return s ? s.label : 'Server';
-      }
-      function currentEntry() {
-        return sel.server === '__current' ? null : sel.channel;
-      }
-      function persistTarget() {
-        const t = currentEntry();
-        if (t) setTarget(t); else gset(TARGET_KEY, 'null');
-      }
-      function syncAllBars() {
-        for (const b of runXSide.bars) {
-          if (!b.isConnected) { runXSide.bars.delete(b); continue; }
-          if (b.sync) b.sync();
-        }
-      }
-      // (history listener is module-level — one registration, not one per bar)
-
-
-      const srvChip = makeChip(
-        () => srvLabel(sel.server),
-        (btn) => {
-          const items = [{ key: '__current', label: 'Open tab', sub: 'current channel', selected: sel.server === '__current' }];
-          servers.forEach(s => items.push({
-            key: s.g, label: s.label, sub: channelsOf(s.g).length + ' ch',
-            selected: sel.server === s.g,
-            iconSeed: s.label, entry: channelsOf(s.g)[0]
-          }));
-          openPop(btn, items, it => {
-            sel.server = it.key;
-            sel.channel = it.key === '__current' ? null : (channelsOf(it.key)[0] || null);
-            persistTarget();
-            syncAllBars();
-          });
+        const items = store.channelsOf(store.sel.server).map(hh => ({
+          key: hh.id, label: chanLabel(hh), selected: store.sel.channel && store.sel.channel.id === hh.id
+        }));
+        openMenu(ch, items, it => {
+          store.sel.channel = store.channelsOf(store.sel.server).find(hh => hh.id === it.key) || null;
+          persistTarget();
+          refreshComposer();
         });
-      const chChip = makeChip(
-        () => sel.server === '__current' ? 'open channel' : chanLabel(sel.channel),
-        (btn) => {
-          if (sel.server === '__current') {
-            openPop(btn, [{ key: 'current', label: 'currently open channel', selected: true }], () => {});
-            return;
-          }
-          const items = channelsOf(sel.server).map(hh => ({
-            key: hh.id, label: chanLabel(hh), selected: sel.channel && sel.channel.id === hh.id,
-            iconSeed: hh.gname || hh.id, entry: hh
-          }));
-          openPop(btn, items, it => {
-            sel.channel = channelsOf(sel.server).find(hh => hh.id === it.key) || null;
-            persistTarget();
-            syncAllBars();
-          });
-        });
-      bar.sync = () => {
-        // live re-read: servers rebuild so backfilled names/icons appear
-        const h = history();
-        servers.length = 0; seenG.clear();
-        for (const hh of h) {
-          const g = hh.guild || 'other';
-          if (seenG.has(g)) continue;
-          seenG.add(g);
-          servers.push({ g, label: hh.gname || (g === '@me' ? 'Direct Messages' : g === 'other' ? 'Other' : 'Server …' + String(g).slice(-4)) });
-        }
-        if (sel.channel) sel.channel = h.find(hh => hh.id === sel.channel.id) || sel.channel;
-        srvChip.refresh();
-        chChip.refresh();
-        refreshChip(sel.server === '__current' ? null : channelsOf(sel.server)[0]);
-      };
-      bar.sync();
-
-
-
-      // transport mode chip: Tab (GM storage → browser tab) / App (broker → Vencord)
-      const modeBtn = document.createElement('div');
-      modeBtn.setAttribute('role', 'button');
-      modeBtn.setAttribute('data-xdr-mode', '1');
-      function refreshModeBtn() {
-        const app = getMode() === 'app';
-        const SVG_TAB = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
-        const SVG_APP = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
-        modeBtn.innerHTML = app ? SVG_APP : SVG_TAB;
-        modeBtn.title = app
-          ? 'Send via Discord desktop app (Vencord plugin) — click to use browser tab instead'
-          : 'Send via Discord browser tab — click to use desktop app (Vencord) instead';
-        styleEl(modeBtn, { display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-          'min-width': '26px', height: '26px', 'border-radius': '9999px', cursor: 'pointer',
-          border: '1px solid ' + C.line, padding: '0 6px',
-          color: app ? (appAlive === false ? C.sub : C.accent) : C.sub });
-      }
-      refreshModeBtn();
-      modeBtn.addEventListener('click', ev => {
-        ev.stopPropagation();
-        const next = getMode() === 'app' ? 'tab' : 'app';
-        if (next === 'app') {
-          brokerHealth(ok => {
-            gset(MODE_KEY, ok ? 'app' : 'tab');
-            toast(ok ? 'App mode ON — sends go through the desktop app' : 'Broker unreachable — staying in Tab mode (start xdr-broker first)', ok ? 'ok' : 'err');
-            document.querySelectorAll('[data-xdr-mode]').forEach(b => { if (b.refresh) b.refresh(); });
-          });
-        } else {
-          gset(MODE_KEY, 'tab');
-          toast('Tab mode ON — sends go through the Discord browser tab');
-          document.querySelectorAll('[data-xdr-mode]').forEach(b => { if (b.refresh) b.refresh(); });
-        }
       });
-      modeBtn.refresh = refreshModeBtn;
-
-      const pingBtn = document.createElement('div');
-      pingBtn.setAttribute('role', 'button');
-      function refreshPingBtn() {
+      tabB.addEventListener('click', () => {
+        gset(MODE_KEY, 'tab');
+        refreshComposer();
+        toast('Tab mode ON — sends go through the Discord browser tab');
+      });
+      appB.addEventListener('click', () => {
+        brokerHealth(ok => {
+          gset(MODE_KEY, ok ? 'app' : 'tab');
+          refreshComposer();
+          toast(ok ? 'App mode ON — sends go through the desktop app' : 'Broker unreachable — staying in Tab mode (start xdr-broker first)', ok ? 'ok' : 'err');
+        });
+      });
+      preset.addEventListener('click', () => {
         const d = getPingData();
-        const count = (d.presets[d.active] || []).length;
-        const on = d.on !== false;
-        pingBtn.textContent = '';
-        const at = document.createElement('span');
-        at.textContent = '@';
-        pingBtn.appendChild(at);
-        if (count > 0) {
-          const badge = document.createElement('span');
-          badge.textContent = String(count);
-          styleEl(badge, { 'font-size': '9px', 'font-weight': '800', 'min-width': '14px',
-            height: '14px', 'border-radius': '7px', display: 'inline-flex',
-            'align-items': 'center', 'justify-content': 'center', padding: '0 3px',
-            background: on ? C.accent : C.sub, color: '#fff', 'margin-left': '2px' });
-          pingBtn.appendChild(badge);
-        }
-        pingBtn.title = on ? 'Ping: ' + d.active + ' (' + count + ') — click to manage, right-click toggle' : 'Ping OFF — right-click to toggle';
-        styleEl(pingBtn, { display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-          gap: '2px', 'min-width': '26px', height: '26px', 'border-radius': '9999px', cursor: 'pointer',
-          'font-weight': '800', 'font-size': '13px', border: '1px solid ' + C.line,
-          padding: '0 6px', color: on ? C.accent : C.sub });
-      }
-      refreshPingBtn();
-
-      pingBtn.addEventListener('contextmenu', ev => {
-        ev.preventDefault(); ev.stopPropagation();
+        const items = Object.keys(d.presets).map(name => ({
+          key: name, label: name, sub: d.presets[name].length + ' users', selected: name === d.active
+        }));
+        openMenu(preset, items, it => {
+          const d2 = getPingData();
+          d2.active = it.key;
+          setPingData(d2);
+          refreshComposer();
+        });
+      });
+      pingT.addEventListener('click', () => {
         const d = getPingData();
         d.on = !(d.on !== false);
         setPingData(d);
-        refreshPingBtn();
-        toast(d.on ? 'Ping ON' : 'Ping OFF');
+        refreshComposer();
       });
-
-      pingBtn.addEventListener('click', ev => {
-        ev.stopPropagation();
-        if (Date.now() < popSuppress) return;
-        closePop();
-        const dark = xTheme() === 'dark';
-        const Cp = dark
-          ? { text: '#e7e9ea', sub: '#71767b', line: '#2f3336', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0', bg: '#1e2126' }
-          : { text: '#0f1419', sub: '#536471', line: '#eff3f4', hover: 'rgba(29,155,240,.1)', accent: '#1d9bf0', bg: '#fff' };
-
-        const d = getPingData();
-        let viewPreset = d.active;
-
-        const p = document.createElement('div');
-        styleEl(p, {
-          position: 'fixed', 'z-index': '2147483646', 'min-width': '240px', 'max-width': '320px',
-          padding: '4px', background: Cp.bg,
-          border: '1px solid ' + Cp.line, 'border-radius': '14px',
-          'box-shadow': '0 8px 28px rgba(0,0,0,' + (dark ? '.6' : '.25') + ')',
-          font: '13px system-ui, -apple-system, "Segoe UI", sans-serif'
-        });
-
-        const header = document.createElement('div');
-        styleEl(header, { padding: '8px 10px 4px', 'font-weight': '800', 'font-size': '13px', color: Cp.text });
-        header.textContent = 'Ping Presets';
-        p.appendChild(header);
-
-        const tabBar = document.createElement('div');
-        styleEl(tabBar, { display: 'flex', gap: '4px', padding: '4px 10px', 'flex-wrap': 'wrap' });
-        p.appendChild(tabBar);
-
-        const listContainer = document.createElement('div');
-        p.appendChild(listContainer);
-
-        const addRow = document.createElement('div');
-        styleEl(addRow, { display: 'flex', gap: '4px', padding: '6px 10px', 'border-top': '1px solid ' + Cp.line, 'margin-top': '4px' });
-        const inp = document.createElement('input');
-        inp.placeholder = 'Paste user ID';
-        inp.setAttribute('type', 'text');
-        inp.setAttribute('data-xdr-input', '1');
-        styleEl(inp, { flex: '1', padding: '4px 8px', 'border-radius': '8px', border: '1px solid ' + Cp.line,
-          background: 'transparent', color: Cp.text, font: '13px system-ui, sans-serif', outline: 'none', 'min-width': '0' });
-        const lblInp = document.createElement('input');
-        lblInp.placeholder = 'Label';
-        lblInp.setAttribute('type', 'text');
-        lblInp.setAttribute('data-xdr-input', '1');
-        styleEl(lblInp, { width: '56px', padding: '4px 8px', 'border-radius': '8px', border: '1px solid ' + Cp.line,
-          background: 'transparent', color: Cp.text, font: '13px system-ui, sans-serif', outline: 'none' });
-        const addBtnEl = document.createElement('div');
-        addBtnEl.textContent = '＋';
-        addBtnEl.setAttribute('role', 'button');
-        styleEl(addBtnEl, { display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-          width: '28px', height: '28px', 'border-radius': '8px', cursor: 'pointer',
-          'font-weight': '800', 'font-size': '16px', color: Cp.accent });
-        addBtnEl.addEventListener('mouseenter', () => addBtnEl.style.setProperty('background', Cp.hover));
-        addBtnEl.addEventListener('mouseleave', () => addBtnEl.style.setProperty('background', 'transparent'));
-
-        function doAdd() {
-          const raw = inp.value.trim();
-          const ids = raw.split(/[\s,;]+/).filter(s => /^\d{17,20}$/.test(s));
-          if (!ids.length) { toast('Paste one or more user IDs (17–20 digits)', 'err'); return; }
-          let added = 0;
-          ids.forEach(uid => { if (addPingUser(viewPreset, uid, ids.length === 1 ? lblInp.value : '')) added++; });
-          if (added) {
-            inp.value = ''; lblInp.value = '';
-            renderAll();
-            refreshPingBtn();
-            toast('Added ' + added + ' user(s) to ' + viewPreset, 'ok');
-          } else {
-            toast('Already added or invalid', 'err');
-          }
-        }
-        inp.__xdrEnter = doAdd;
-
-        addBtnEl.addEventListener('click', e2 => { e2.stopPropagation(); doAdd(); });
-        [inp, lblInp].forEach(el => {
-          ['mousedown', 'click', 'mouseup'].forEach(evt =>
-            el.addEventListener(evt, e2 => e2.stopPropagation()));
-        });
-
-        addRow.appendChild(inp);
-        addRow.appendChild(lblInp);
-        addRow.appendChild(addBtnEl);
-        p.appendChild(addRow);
-
-        const bottomRow = document.createElement('div');
-        styleEl(bottomRow, { display: 'flex', gap: '6px', padding: '6px 10px', 'border-top': '1px solid ' + Cp.line, 'margin-top': '2px', 'align-items': 'center' });
-
-        const newPresetBtn = document.createElement('div');
-        newPresetBtn.setAttribute('role', 'button');
-        newPresetBtn.textContent = '＋ New preset';
-        styleEl(newPresetBtn, { 'font-weight': '600', 'font-size': '12px', color: Cp.accent, cursor: 'pointer', padding: '4px 8px', 'border-radius': '6px' });
-        newPresetBtn.addEventListener('mouseenter', () => newPresetBtn.style.setProperty('background', Cp.hover));
-        newPresetBtn.addEventListener('mouseleave', () => newPresetBtn.style.setProperty('background', 'transparent'));
-
-        const nameInp = document.createElement('input');
-        nameInp.placeholder = 'Preset name';
-        nameInp.setAttribute('type', 'text');
-        nameInp.setAttribute('data-xdr-input', '1');
-        styleEl(nameInp, { flex: '1', padding: '4px 8px', 'border-radius': '8px', border: '1px solid ' + Cp.line,
-          background: 'transparent', color: Cp.text, font: '13px system-ui, sans-serif', outline: 'none', 'min-width': '0', display: 'none' });
-
-        const okBtn = document.createElement('div');
-        okBtn.setAttribute('role', 'button');
-        okBtn.textContent = '✓';
-        styleEl(okBtn, { display: 'none', 'align-items': 'center', 'justify-content': 'center', width: '26px', height: '26px',
-          'border-radius': '6px', cursor: 'pointer', 'font-weight': '800', color: '#2ecc71' });
-        okBtn.addEventListener('mouseenter', () => okBtn.style.setProperty('background', Cp.hover));
-        okBtn.addEventListener('mouseleave', () => okBtn.style.setProperty('background', 'transparent'));
-
-        const cancelBtn = document.createElement('div');
-        cancelBtn.setAttribute('role', 'button');
-        cancelBtn.textContent = '✕';
-        styleEl(cancelBtn, { display: 'none', 'align-items': 'center', 'justify-content': 'center', width: '26px', height: '26px',
-          'border-radius': '6px', cursor: 'pointer', 'font-weight': '800', color: Cp.sub });
-        cancelBtn.addEventListener('mouseenter', () => cancelBtn.style.setProperty('background', Cp.hover));
-        cancelBtn.addEventListener('mouseleave', () => cancelBtn.style.setProperty('background', 'transparent'));
-
-        function setCreateMode(on) {
-          newPresetBtn.style.setProperty('display', on ? 'none' : 'block');
-          nameInp.style.setProperty('display', on ? 'block' : 'none');
-          okBtn.style.setProperty('display', on ? 'flex' : 'none');
-          cancelBtn.style.setProperty('display', on ? 'flex' : 'none');
-          if (on) setTimeout(() => nameInp.focus(), 40);
-        }
-        function doCreate() {
-          const name = nameInp.value.trim();
-          if (!name) { toast('Preset name required', 'err'); return; }
-          const d2 = getPingData();
-          if (d2.presets[name]) { toast('Preset already exists', 'err'); return; }
-          d2.presets[name] = [];
-          d2.active = name;
-          setPingData(d2);
-          viewPreset = name;
-          nameInp.value = '';
-          setCreateMode(false);
-          renderAll();
-          refreshPingBtn();
-          toast('Preset "' + name + '" created', 'ok');
-        }
-        nameInp.__xdrEnter = doCreate;
-        newPresetBtn.addEventListener('click', e2 => { e2.stopPropagation(); setCreateMode(true); });
-        okBtn.addEventListener('click', e2 => { e2.stopPropagation(); doCreate(); });
-        cancelBtn.addEventListener('click', e2 => { e2.stopPropagation(); setCreateMode(false); });
-        ['mousedown', 'click', 'mouseup'].forEach(evt =>
-          nameInp.addEventListener(evt, e2 => e2.stopPropagation()));
-
-        const toggleLbl = document.createElement('span');
-        const td = getPingData();
-        toggleLbl.textContent = (td.on !== false) ? '● ON' : '○ OFF';
-        styleEl(toggleLbl, { 'font-weight': '700', 'font-size': '12px', color: (td.on !== false) ? '#2ecc71' : Cp.sub, cursor: 'pointer', 'margin-left': 'auto', padding: '4px 8px', 'border-radius': '6px' });
-        toggleLbl.addEventListener('mouseenter', () => toggleLbl.style.setProperty('background', Cp.hover));
-        toggleLbl.addEventListener('mouseleave', () => toggleLbl.style.setProperty('background', 'transparent'));
-        toggleLbl.addEventListener('click', e2 => {
-          e2.stopPropagation();
-          const d2 = getPingData();
-          d2.on = !(d2.on !== false);
-          setPingData(d2);
-          toggleLbl.textContent = d2.on ? '● ON' : '○ OFF';
-          toggleLbl.style.setProperty('color', d2.on ? '#2ecc71' : Cp.sub);
-          refreshPingBtn();
-        });
-
-        bottomRow.appendChild(newPresetBtn);
-        bottomRow.appendChild(nameInp);
-        bottomRow.appendChild(okBtn);
-        bottomRow.appendChild(cancelBtn);
-        bottomRow.appendChild(toggleLbl);
-        p.appendChild(bottomRow);
-
-        function renderAll() {
-          const d2 = getPingData();
-          tabBar.textContent = '';
-          Object.keys(d2.presets).forEach(name => {
-            const tab = document.createElement('div');
-            tab.textContent = name;
-            const isActive = name === d2.active;
-            const isViewing = name === viewPreset;
-            styleEl(tab, {
-              padding: '3px 10px', 'border-radius': '9999px', cursor: 'pointer',
-              'font-weight': '700', 'font-size': '12px',
-              background: isViewing ? (isActive ? Cp.accent : Cp.line) : 'transparent',
-              color: isViewing ? (isActive ? '#fff' : Cp.text) : (isActive ? Cp.accent : Cp.sub),
-              border: '1px solid ' + (isActive ? Cp.accent : Cp.line)
-            });
-            tab.addEventListener('click', e2 => {
-              e2.stopPropagation();
-              const d3 = getPingData();
-              d3.active = name;
-              setPingData(d3);
-              viewPreset = name;
-              renderAll();
-              refreshPingBtn();
-            });
-            tab.addEventListener('contextmenu', e2 => {
-              e2.preventDefault(); e2.stopPropagation();
-              if (Object.keys(getPingData().presets).length <= 1) { toast('Cannot delete the last preset', 'err'); return; }
-              if (tab.__xdrArm) {
-                delete tab.__xdrArm;
-                const d3 = getPingData();
-                delete d3.presets[name];
-                if (d3.active === name) d3.active = Object.keys(d3.presets)[0];
-                setPingData(d3);
-                viewPreset = d3.active;
-                renderAll();
-                refreshPingBtn();
-                toast('Deleted preset "' + name + '"');
-              } else {
-                tab.__xdrArm = true;
-                tab.style.setProperty('color', '#ff5c7a');
-                tab.style.setProperty('border-color', '#ff5c7a');
-                tab.title = 'Right-click again to delete "' + name + '"';
-                setTimeout(() => {
-                  if (tab.__xdrArm) { delete tab.__xdrArm; tab.title = ''; renderAll(); }
-                }, 4000);
-              }
-            });
-            tabBar.appendChild(tab);
-          });
-
-          listContainer.textContent = '';
-          const users = d2.presets[viewPreset] || [];
-          if (!users.length) {
-            const empty = document.createElement('div');
-            empty.textContent = 'No users in this preset';
-            styleEl(empty, { padding: '8px 10px', color: Cp.sub, 'font-size': '12px', 'font-style': 'italic' });
-            listContainer.appendChild(empty);
-          }
-          users.forEach(u => {
-            const row = document.createElement('div');
-            styleEl(row, { display: 'flex', 'align-items': 'center', gap: '8px',
-              padding: '5px 10px', 'border-radius': '8px', color: Cp.text });
-            const lbl = document.createElement('span');
-            lbl.textContent = u.label || u.id;
-            styleEl(lbl, { 'font-weight': '600', overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap', flex: '1' });
-            const idSpan = document.createElement('span');
-            idSpan.textContent = u.id;
-            styleEl(idSpan, { color: Cp.sub, 'font-size': '11px', 'white-space': 'nowrap' });
-            const rm = document.createElement('span');
-            rm.textContent = '✕';
-            styleEl(rm, { color: Cp.sub, cursor: 'pointer', 'font-weight': '800', 'font-size': '12px', padding: '2px 4px', 'border-radius': '4px' });
-            rm.addEventListener('mouseenter', () => rm.style.setProperty('color', '#ff5c7a'));
-            rm.addEventListener('mouseleave', () => rm.style.setProperty('color', Cp.sub));
-            rm.addEventListener('click', rmEv => {
-              rmEv.stopPropagation();
-              removePingUser(viewPreset, u.id);
-              renderAll();
-              refreshPingBtn();
-            });
-            row.appendChild(lbl);
-            row.appendChild(idSpan);
-            row.appendChild(rm);
-            listContainer.appendChild(row);
-          });
-        }
-        renderAll();
-
-        document.documentElement.appendChild(p);
-        const r = pingBtn.getBoundingClientRect();
-        const pw = p.getBoundingClientRect();
-        let px = Math.min(Math.max(8, r.left), innerWidth - pw.width - 8);
-        let py = r.bottom + 6;
-        if (py + pw.height > innerHeight - 8) py = Math.max(8, r.top - pw.height - 6);
-        p.style.setProperty('left', px + 'px');
-        p.style.setProperty('top', py + 'px');
-        pop = p;
-        pop.__xdrAnchor = pingBtn;
-        setTimeout(() => inp.focus(), 50);
+      editB.addEventListener('click', () => {
+        composer.editOpen = !composer.editOpen;
+        refreshComposer();
       });
-
-      const sendBtn = document.createElement('div');
-      sendBtn.setAttribute('role', 'button');
-      sendBtn.innerHTML = SEND_SVG + '<span>Send</span>';
-      styleEl(sendBtn, { display: 'flex', 'align-items': 'center', gap: '6px',
-        padding: '4px 14px', 'border-radius': '9999px', cursor: 'pointer',
-        'font-weight': '700', color: C.accent, 'font-size': '13px', 'margin-left': 'auto' });
-      sendBtn.addEventListener('mouseenter', () => sendBtn.style.setProperty('background', C.hover));
-      sendBtn.addEventListener('mouseleave', () => sendBtn.style.setProperty('background', 'transparent'));
-      sendBtn.addEventListener('click', ev => {
-        ev.stopPropagation();
-        relay(articleUrl(article) || lastTweetUrl, currentEntry(), isPingOn());
-      });
-
-      bar.appendChild(chip);
-      bar.appendChild(srvChip);
-      bar.appendChild(chChip);
-      bar.appendChild(modeBtn);
-      bar.appendChild(pingBtn);
-      bar.appendChild(sendBtn);
-      bar.refreshPing = refreshPingBtn;
-      bar.setSending = on => { sendBtn.style.setProperty('opacity', on ? '.45' : '1'); sendBtn.style.setProperty('pointer-events', on ? 'none' : 'auto'); };
-      bar.addEventListener('contextmenu', ev => {
-        if (ev.target !== bar) return;
-        if (gget('xdr.pillHidden', '') === '1') { gset('xdr.pillHidden', '0'); makePill(); toast('Quick-send pill restored'); }
-      });
-      return bar;
     }
 
-    const hoverCss = document.createElement('style');
-    hoverCss.textContent =
-      'article[data-xdr-done]:not(:hover) [data-xdr-bar]{display:none!important}' +
-      'article[data-xdr-main] [data-xdr-bar]{display:flex!important}' +
-      '#xdrPill [data-xdr-pillx]{opacity:0;transition:opacity .12s ease}#xdrPill:hover [data-xdr-pillx]{opacity:1}';
-    function injectBars() {
-      if (!hoverCss.isConnected && document.documentElement) document.documentElement.appendChild(hoverCss);
-      const statusPath = (location.pathname.match(/^\/[^/]+\/status\/\d+/) || [])[0];
-      let arts = document.querySelectorAll('article[data-testid="tweet"]');
-      if (!arts.length) arts = document.querySelectorAll('article'); // logged-out layout fallback
-      for (const art of arts) {
-        const u = articleUrl(art);
-        if (u && statusPath) {
-          try { if (new URL(u, location.origin).pathname.startsWith(statusPath)) art.setAttribute('data-xdr-main', '1'); else art.removeAttribute('data-xdr-main'); } catch (e) {}
-        } else if (art.getAttribute('data-xdr-main')) art.removeAttribute('data-xdr-main');
-        if (art.getAttribute('data-xdr-done')) continue;
-        if (!u) continue;
-        const replyEl = art.querySelector('[data-testid="reply"]') || art.querySelector('[role="group"]');
-        // climb to the first node with 3+ element children — that's the full
-        // action ROW ([data-testid=reply] is just the reply button; its parent
-        // is only the icon+count group, and inserting there wrecks the layout)
-        let actionRow = null;
-        let el = replyEl;
-        while (el && el !== art) {
-          if (el.children.length >= 3) { actionRow = el; break; }
-          el = el.parentElement;
+    function renderPanel(panel) {
+      panel.textContent = '';
+      const d = getPingData();
+      const chips = el('div', 'xdr-chips');
+      Object.keys(d.presets).forEach(name => {
+        const c = el('div', 'xdr-chip' + (name === d.active ? ' on' : ''), name);
+        c.setAttribute('role', 'button');
+        c.title = name === d.active ? 'Active preset' : 'Click to make active. Double-click to delete.';
+        c.addEventListener('click', ev => {
+          ev.stopPropagation();
+          if (composer.delArm === name) {
+            const names = Object.keys(getPingData().presets);
+            if (names.length <= 1) { toast('Cannot delete the last preset', 'err'); return; }
+            const d2 = getPingData();
+            delete d2.presets[name];
+            if (d2.active === name) d2.active = Object.keys(d2.presets)[0];
+            setPingData(d2);
+            composer.delArm = null;
+            refreshComposer();
+            toast('Deleted preset "' + name + '"');
+          } else {
+            const d2 = getPingData();
+            d2.active = name;
+            setPingData(d2);
+            refreshComposer();
+          }
+        });
+        c.addEventListener('dblclick', ev => {
+          ev.stopPropagation();
+          if (Object.keys(getPingData().presets).length <= 1) { toast('Cannot delete the last preset', 'err'); return; }
+          composer.delArm = name;
+          refreshComposer();
+          toast('Click "' + name + '" again to confirm delete', 'err');
+        });
+        chips.appendChild(c);
+      });
+      panel.appendChild(chips);
+      if (composer.delArm && !d.presets[composer.delArm]) composer.delArm = null;
+      if (composer.delArm) {
+        const arm = el('div', 'xdr-lbl', 'Click "' + composer.delArm + '" again to confirm delete, or pick another preset.');
+        arm.style.color = '#ff5c7a';
+        panel.appendChild(arm);
+      }
+      const users = d.presets[d.active] || [];
+      if (!users.length) panel.appendChild(el('div', 'xdr-lbl', 'No users in "' + d.active + '" — add one below.'));
+      users.forEach(u => {
+        const row = el('div', 'xdr-urow');
+        row.appendChild(el('span', 'n', u.label || u.id));
+        row.appendChild(el('span', 'i', u.id));
+        const rm = el('span', 'rm', '✕');
+        rm.setAttribute('role', 'button');
+        rm.setAttribute('aria-label', 'Remove ' + (u.label || u.id));
+        rm.addEventListener('click', ev => {
+          ev.stopPropagation();
+          const d2 = getPingData();
+          d2.presets[d2.active] = (d2.presets[d2.active] || []).filter(x => x.id !== u.id);
+          setPingData(d2);
+          refreshComposer();
+        });
+        row.appendChild(rm);
+        panel.appendChild(row);
+      });
+      const addRow = el('div', 'xdr-add');
+      const inp = document.createElement('input');
+      inp.placeholder = 'User ID (17–20 digits, paste several at once)';
+      inp.setAttribute('type', 'text');
+      inp.setAttribute('data-xdr-input', '1');
+      const addB = el('div', 'xdr-btn2', 'Add');
+      addB.setAttribute('role', 'button');
+      const doAdd = () => {
+        const ids = inp.value.trim().split(/[\s,;]+/).filter(s => /^\d{17,20}$/.test(s));
+        if (!ids.length) { toast('Paste one or more user IDs (17–20 digits)', 'err'); return; }
+        const d2 = getPingData();
+        if (!d2.presets[d2.active]) d2.presets[d2.active] = [];
+        let added = 0;
+        ids.forEach(uid => {
+          if (!d2.presets[d2.active].some(x => x.id === uid)) {
+            d2.presets[d2.active].push({ id: uid, label: uid });
+            added++;
+          }
+        });
+        setPingData(d2);
+        refreshComposer();
+        toast(added ? ('Added ' + added + ' user(s) to ' + d2.active) : 'Already added or invalid', added ? 'ok' : 'err');
+      };
+      inp.__xdrEnter = doAdd;
+      addB.addEventListener('click', ev => { ev.stopPropagation(); doAdd(); });
+      ['mousedown', 'click', 'mouseup'].forEach(evt => inp.addEventListener(evt, e2 => e2.stopPropagation()));
+      addRow.appendChild(inp);
+      addRow.appendChild(addB);
+      panel.appendChild(addRow);
+      const newRow = el('div', 'xdr-add');
+      const nameInp = document.createElement('input');
+      nameInp.placeholder = 'New preset name…';
+      nameInp.setAttribute('type', 'text');
+      nameInp.setAttribute('data-xdr-input', '1');
+      const createB = el('div', 'xdr-btn2', '+ New preset');
+      createB.setAttribute('role', 'button');
+      const doCreate = () => {
+        const name = nameInp.value.trim();
+        if (!name) { toast('Preset name required', 'err'); return; }
+        const d2 = getPingData();
+        if (d2.presets[name]) { toast('Preset already exists', 'err'); return; }
+        d2.presets[name] = [];
+        d2.active = name;
+        setPingData(d2);
+        composer.delArm = null;
+        refreshComposer();
+        toast('Preset "' + name + '" created', 'ok');
+      };
+      nameInp.__xdrEnter = doCreate;
+      createB.addEventListener('click', ev => { ev.stopPropagation(); doCreate(); });
+      ['mousedown', 'click', 'mouseup'].forEach(evt => nameInp.addEventListener(evt, e2 => e2.stopPropagation()));
+      newRow.appendChild(nameInp);
+      newRow.appendChild(createB);
+      panel.appendChild(newRow);
+    }
+
+    function refreshComposer() {
+      const ov = document.getElementById('xdrOverlay');
+      if (!ov || ov.hidden) return;
+      const d = getPingData();
+      const users = d.presets[d.active] || [];
+      const post = document.getElementById('xdrPost');
+      if (post && composer.link) {
+        post.textContent = '';
+        const sn = el('div', null, composer.snippet || '');
+        post.appendChild(sn);
+        const lk = document.createElement('a');
+        lk.href = composer.link;
+        lk.textContent = composer.link;
+        lk.target = '_blank';
+        lk.rel = 'noopener';
+        post.appendChild(lk);
+      }
+      const srv = document.getElementById('xdrSrv');
+      if (srv) {
+        srv.textContent = '';
+        srv.appendChild(el('span', 't', srvLabel(store.sel.server)));
+        srv.appendChild(el('span', 'c', '▾'));
+      }
+      const ch = document.getElementById('xdrCh');
+      if (ch) {
+        ch.textContent = '';
+        ch.appendChild(el('span', 't', store.sel.server === '__current' ? 'open channel' : chanLabel(store.sel.channel)));
+        ch.appendChild(el('span', 'c', '▾'));
+      }
+      const isApp = getMode() === 'app';
+      const tabB = document.getElementById('xdrModeTab');
+      const appB = document.getElementById('xdrModeApp');
+      if (tabB) tabB.className = isApp ? '' : 'on';
+      if (appB) {
+        appB.className = isApp ? 'on' : '';
+        appB.style.opacity = (isApp && appAlive === false) ? '.45' : '1';
+      }
+      const preset = document.getElementById('xdrPreset');
+      if (preset) {
+        preset.textContent = '';
+        preset.appendChild(el('span', 't', '@ ' + d.active + (users.length ? ' (' + users.length + ')' : '')));
+        preset.appendChild(el('span', 'c', '▾'));
+      }
+      const pingT = document.getElementById('xdrPingT');
+      if (pingT) {
+        const on = d.on !== false;
+        pingT.textContent = on ? '● Ping on' : '○ Off';
+        pingT.style.color = on ? '#2ecc71' : 'var(--xdr-sub,#536471)';
+      }
+      const editB = document.getElementById('xdrEdit');
+      if (editB) editB.style.color = composer.editOpen ? '#1d9bf0' : '';
+      const panel = document.getElementById('xdrPanel');
+      if (panel) {
+        panel.hidden = !composer.editOpen;
+        if (composer.editOpen) renderPanel(panel);
+      }
+      setSending(!!runXSide.sending);
+      refreshSplits();
+    }
+
+    function openComposer(link, snippet) {
+      ensureCss();
+      buildComposer();
+      store.readHist();
+      reselect();
+      composer.link = link || lastTweetUrl || location.href;
+      composer.snippet = snippet !== undefined ? snippet : lastTweetText;
+      composer.editOpen = false;
+      composer.delArm = null;
+      closeMenu();
+      const ov = document.getElementById('xdrOverlay');
+      ov.hidden = false;
+      refreshComposer();
+      requestAnimationFrame(() => ov.classList.add('open'));
+      const s = document.getElementById('xdrSend');
+      if (s) s.focus();
+    }
+    function closeComposer() {
+      closeMenu();
+      const ov = document.getElementById('xdrOverlay');
+      if (ov) { ov.classList.remove('open'); ov.hidden = true; }
+    }
+
+    const seenArts = new WeakSet();
+    const splits = new Set();
+    function goText() {
+      let lbl;
+      if (store.sel.server === '__current') lbl = 'Open tab';
+      else {
+        const t = currentEntry();
+        if (!t) return 'Pick channel…';
+        lbl = chanLabel(t);
+        if (lbl.length > 12) lbl = lbl.slice(0, 11) + '…';
+      }
+      let badge = '';
+      try {
+        const d = getPingData();
+        const n = (d.on !== false) ? ((d.presets[d.active] || []).length) : 0;
+        if (n > 0) badge = ' @' + n;
+      } catch (e) {}
+      return lbl + badge;
+    }
+    function goTitle() {
+      const t = currentEntry();
+      const where = t ? (srvLabel(store.sel.server) + ' / ' + chanLabel(t)) : 'no target yet';
+      return 'Send to ' + where + ' (' + getMode() + ' mode) — click to send, ▾ for options';
+    }
+    function paintGo(go) {
+      go.textContent = '';
+      const ic = document.createElement('span');
+      ic.innerHTML = SEND_SVG;
+      ic.style.cssText = 'display:flex;align-items:center';
+      go.appendChild(ic);
+      const tx = document.createElement('span');
+      tx.className = 't';
+      tx.textContent = goText();
+      go.appendChild(tx);
+      go.title = goTitle();
+    }
+    function refreshSplits() {
+      for (const s of splits) {
+        if (!s.go.isConnected) { splits.delete(s); continue; }
+        if (s.go.classList.contains('busy')) continue;
+        s.go.classList.remove('ok', 'fail');
+        paintGo(s.go);
+      }
+    }
+    function actionRowOf(art) {
+      const replyEl = art.querySelector('[data-testid="reply"]') || art.querySelector('[role="group"]');
+      let elm = replyEl;
+      while (elm && elm !== art) {
+        if (elm.children.length >= 3) return elm;
+        elm = elm.parentElement;
+      }
+      return art.lastElementChild;
+    }
+    function ensureBtn(art) {
+      if (!art || seenArts.has(art)) return;
+      if (art.querySelector(':scope .xdr-split')) { seenArts.add(art); return; }
+      const u = articleUrl(art);
+      if (!u) return;
+      const row = actionRowOf(art);
+      if (!row || !row.isConnected) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'xdr-split';
+      const go = document.createElement('div');
+      go.className = 'xdr-go';
+      go.setAttribute('role', 'button');
+      go.setAttribute('tabindex', '0');
+      paintGo(go);
+      const chev = document.createElement('div');
+      chev.className = 'xdr-chev';
+      chev.setAttribute('role', 'button');
+      chev.setAttribute('tabindex', '0');
+      chev.setAttribute('aria-label', 'Send options');
+      chev.title = 'Options: channel, pings, mode';
+      chev.textContent = '▾';
+      wrap.appendChild(go);
+      wrap.appendChild(chev);
+      splits.add({ go });
+      const fire = () => {
+        if (go.classList.contains('busy')) return;
+        if (store.sel.server !== '__current' && !currentEntry()) { openComposer(articleUrl(art) || u, articleSnippet(art)); return; }
+        go.classList.add('busy');
+        go.textContent = '';
+        const sp = document.createElement('span');
+        sp.className = 'xdr-spin';
+        go.appendChild(sp);
+        const tx = document.createElement('span');
+        tx.className = 't';
+        tx.textContent = 'Sending…';
+        go.appendChild(tx);
+        relay(articleUrl(art) || u, currentEntry(), isPingOn(), ok => {
+          go.classList.remove('busy');
+          go.classList.add(ok ? 'ok' : 'fail');
+          if (ok) {
+            go.textContent = '✓ Sent';
+            setTimeout(() => { paintGo(go); go.classList.remove('ok'); }, 1500);
+          } else {
+            go.textContent = '↻ Retry';
+            go.title = 'Send failed — click to retry';
+          }
+        });
+      };
+      go.addEventListener('click', ev => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        if (go.classList.contains('fail')) { go.classList.remove('fail'); paintGo(go); }
+        fire();
+      });
+      go.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.stopPropagation();
+          ev.preventDefault();
+          fire();
         }
-        if (!actionRow) actionRow = art.lastElementChild;
-        const col = actionRow.parentElement || art;
-        if (col.querySelector('[data-xdr-bar]')) continue;
-        art.setAttribute('data-xdr-done', '1');
-        col.insertBefore(buildBar(art), actionRow.parentElement === col ? actionRow.nextSibling : null);
+      });
+      chev.addEventListener('click', ev => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        openComposer(articleUrl(art) || u, articleSnippet(art));
+      });
+      chev.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.stopPropagation();
+          ev.preventDefault();
+          openComposer(articleUrl(art) || u, articleSnippet(art));
+        }
+      });
+      wrap.addEventListener('contextmenu', ev => {
+        if (gget('xdr.pillHidden', '') === '1') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          gset('xdr.pillHidden', '0');
+          makePill();
+          toast('Quick-send pill restored');
+        }
+      });
+      ['mousedown', 'click', 'mouseup', 'dblclick', 'auxclick'].forEach(evt =>
+        wrap.addEventListener(evt, e => e.stopPropagation()));
+      row.appendChild(wrap);
+      seenArts.add(art);
+      const statusPath = (location.pathname.match(/^\/[^/]+\/status\/\d+/) || [])[0];
+      try {
+        if (statusPath && new URL(u, location.origin).pathname.startsWith(statusPath)) art.setAttribute('data-xdr-main', '1');
+        else art.removeAttribute('data-xdr-main');
+      } catch (e) {}
+    }
+    function ensureAll() {
+      let arts = document.querySelectorAll('article[data-testid="tweet"]');
+      if (!arts.length) arts = document.querySelectorAll('article');
+      for (const art of arts) ensureBtn(art);
+    }
+
+    let rafQueued = false;
+    const pendingArts = new Set();
+    function drainQueue() {
+      rafQueued = false;
+      for (const n of pendingArts) {
+        if (n.isConnected) {
+          if (n.matches && n.matches('article')) ensureBtn(n);
+          if (n.querySelectorAll) {
+            const inner = n.querySelectorAll('article[data-testid="tweet"],article');
+            for (const a of inner) ensureBtn(a);
+          }
+        }
+      }
+      pendingArts.clear();
+    }
+    function onMut(recs) {
+      for (const rec of recs) {
+        for (const n of rec.addedNodes) {
+          if (n.nodeType !== 1) continue;
+          pendingArts.add(n);
+        }
+      }
+      if (!rafQueued && pendingArts.size) {
+        rafQueued = true;
+        requestAnimationFrame(drainQueue);
       }
     }
 
-    // floating quick-send: posts the last hovered post to the selected target
     function makePill() {
       if (gget('xdr.pillHidden', '') === '1') return;
-      const dark = xTheme() === 'dark';
+      if (document.getElementById('xdrPill')) return;
+      ensureCss();
+      const dark = document.documentElement.getAttribute('data-xdr-theme') === 'dark';
       const p = document.createElement('div');
       p.id = 'xdrPill';
-      styleEl(p, { position: 'fixed', right: '20px', bottom: '20px', 'z-index': '2147483647',
-        display: 'flex', 'align-items': 'center', gap: '8px', padding: '7px 8px 7px 14px', 'border-radius': '999px', cursor: 'pointer',
-        font: '600 13px system-ui, sans-serif',
-        color: dark ? '#e7e9ea' : '#0f1419',
-        background: dark ? '#1e2126' : '#ffffff', border: '1px solid ' + (dark ? '#2f3336' : '#eff3f4'),
-        'box-shadow': '0 6px 20px rgba(0,0,0,' + (dark ? '.4' : '.12') + ')', 'user-select': 'none' });
+      p.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483647;display:flex;align-items:center;gap:8px;padding:7px 8px 7px 14px;border-radius:999px;cursor:pointer;font:600 13px system-ui,sans-serif;color:' + (dark ? '#e7e9ea' : '#0f1419') + ';background:' + (dark ? '#1e2126' : '#ffffff') + ';border:1px solid ' + (dark ? '#2f3336' : '#eff3f4') + ';box-shadow:0 6px 20px rgba(0,0,0,.2);user-select:none';
       const ic = document.createElement('span');
       ic.innerHTML = SEND_SVG;
-      styleEl(ic, { display: 'flex', 'align-items': 'center', color: '#1d9bf0' });
+      ic.style.cssText = 'display:flex;align-items:center;color:#1d9bf0';
       const lbl = document.createElement('span');
       lbl.textContent = 'Discord';
-      const x = document.createElement('span');
-      x.setAttribute('data-xdr-pillx', '1');
-      x.textContent = '✕';
-      styleEl(x, { display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'min-width': '18px', height: '18px',
-        'border-radius': '50%', cursor: 'pointer', 'font-size': '11px', 'font-weight': '800',
-        color: dark ? '#71767b' : '#536471' });
-      x.addEventListener('click', ev => {
+      const xx = document.createElement('span');
+      xx.textContent = '✕';
+      xx.setAttribute('role', 'button');
+      xx.style.cssText = 'display:flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:50%;cursor:pointer;font-size:11px;font-weight:800;color:' + (dark ? '#71767b' : '#536471');
+      xx.addEventListener('click', ev => {
         ev.stopPropagation();
         gset('xdr.pillHidden', '1');
         p.remove();
-        toast('Quick-send pill hidden — right-click a send bar to bring it back');
+        toast('Quick-send pill hidden — right-click a post button to bring it back');
       });
       p.appendChild(ic);
       p.appendChild(lbl);
-      p.appendChild(x);
-      p.addEventListener('click', ev => { ev.stopPropagation(); relay(null, getTarget(), isPingOn()); });
+      p.appendChild(xx);
+      p.addEventListener('click', ev => { ev.stopPropagation(); relay(null, currentEntry(), isPingOn()); });
       document.documentElement.appendChild(p);
     }
 
-    setInterval(injectBars, 1500);
-    function syncAllBarsModule() {
-      for (const b of (runXSide.bars || new Set())) {
-        if (!b.isConnected) { runXSide.bars.delete(b); continue; }
-        if (b.sync) b.sync();
-      }
-    }
-    GM_addValueChangeListener(HIST_KEY, (name, oldV, newV, remote) => { if (remote) syncAllBarsModule(); });
+    ensureCss();
+    applyTheme();
+    let themeTimer = 0;
+    const themeObs = new MutationObserver(() => {
+      clearTimeout(themeTimer);
+      themeTimer = setTimeout(applyTheme, 500);
+    });
+    themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+    try { themeObs.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] }); } catch (e) {}
+    try {
+      matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+    } catch (e) {}
+
+    const feedObs = new MutationObserver(onMut);
+    try {
+      feedObs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (e) {}
+    ensureAll();
+    setTimeout(ensureAll, 2500);
+    setInterval(ensureAll, 10000);
+
+    GM_addValueChangeListener(HIST_KEY, (name, oldV, newV, remote) => {
+      if (!remote) return;
+      store.readHist();
+      store.histV++;
+      reselect();
+      refreshSplits();
+      refreshComposer();
+    });
     GM_addValueChangeListener(PING_PRESET_KEY, (name, oldV, newV, remote) => {
       if (!remote) return;
-      for (const b of (runXSide.bars || new Set())) { if (b.refreshPing) b.refreshPing(); }
+      refreshSplits();
+      refreshComposer();
     });
     setInterval(sweepStale, 60000);
     sweepStale();
@@ -1060,10 +1135,10 @@
         const t = e.target;
         if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
         e.preventDefault(); e.stopPropagation();
-        relay(lastTweetUrl, getTarget(), isPingOn());
+        relay(lastTweetUrl, currentEntry(), isPingOn());
       }
     }, true);
-    console.debug('[xdr] X side active v1.8.0');
+    console.debug('[xdr] X side active v1.9.2');
   }
 
   // ---------------- Discord side ----------------
@@ -1311,7 +1386,7 @@
       if (!box) return false;
       box.focus();
       try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (e) {}
-      if (!await pollUntil(() => (box.textContent || '').trim() === '', 800, 80)) {
+      if (!await pollUntil(() => (box.textContent || '').trim() === '', 800, 50)) {
         console.debug('[xdr] composer not clearable — not pasting');
         return false;
       }
@@ -1320,18 +1395,21 @@
         dt.setData('text/plain', text);
         box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       } catch (e) { return false; }
-      if (!await pollUntil(() => (box.textContent || '').includes(text.slice(0, 24)), 2000, 100)) {
+      if (!await pollUntil(() => (box.textContent || '').includes(text.slice(0, 24)), 2000, 50)) {
         console.debug('[xdr] paste did not land');
         return false;
       }
-      box.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
-      }));
-      if (await pollUntil(() => (box.textContent || '').trim() === '', 1500, 100)) return true;
+      const pressEnter = () => {
+        box.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+        }));
+      };
       const btn = Array.from(document.querySelectorAll('[role="button"][aria-label], button[aria-label]'))
         .find(b => /^send$/i.test(b.getAttribute('aria-label') || ''));
-      if (btn) btn.click();
-      const flushed = await pollUntil(() => (box.textContent || '').trim() === '', 1500, 100);
+      if (btn) btn.click(); else pressEnter();
+      if (await pollUntil(() => (box.textContent || '').trim() === '', 1200, 50)) return true;
+      pressEnter();
+      const flushed = await pollUntil(() => (box.textContent || '').trim() === '', 800, 50);
       console.debug('[xdr] domSend flushed=' + flushed);
       return flushed;
     }
@@ -1358,14 +1436,15 @@
     }
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    // SPA route change without reload (Discord's router listens to popstate)
+    // SPA route change without reload (Discord's router listens to popstate).
+    // Readiness is polled, never slept on: pathname here, composer remount
+    // at the call site via the aria-label gate.
     async function spaNavigate(path) {
       try {
         window.history.pushState({}, '', path);
         window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
       } catch (e) {}
-      await sleep(500);
-      return location.pathname === path;
+      return pollUntil(() => location.pathname === path, 1500, 50);
     }
 
     // DOM-primary send: the internal sendMessage call resolves on DISPATCH,
@@ -1382,13 +1461,14 @@
           return clientSend(channelId, content);
         }
         const okNav = await spaNavigate('/channels/' + guild + '/' + channelId);
-        await sleep(700);
-        const box = composer();
-        const label = (box && box.getAttribute('aria-label')) || '';
         const want = String(chName || '').replace(/^#/, '').trim();
-        const verified = okNav && box && (!want || label.toLowerCase().includes(want.toLowerCase()));
+        const verified = okNav && await pollUntil(() => {
+          const box = composer();
+          const label = (box && box.getAttribute('aria-label')) || '';
+          return box && (!want || label.toLowerCase().includes(want.toLowerCase()));
+        }, 4000, 50);
         if (!verified) {
-          console.debug('[xdr] nav-verify failed (label="' + label + '" want="' + want + '") — not pasting');
+          console.debug('[xdr] nav-verify failed (want="' + want + '") — not pasting');
           await spaNavigate(back);
           return clientSend(channelId, content);  // best-effort fallback
         }
@@ -1483,7 +1563,7 @@
       findMessageActions();
     }, 3000);
 
-    console.debug('[xdr] Discord side active v1.8.0');
+    console.debug('[xdr] Discord side active v1.9.2');
   }
 
   // ---------------- dispatch ----------------

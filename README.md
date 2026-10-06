@@ -2,7 +2,7 @@
 
 Relay any X/Twitter post to a Discord channel **as your own account, through the real Discord client** — no bot, no webhook, no user token, no Discord API calls. Post links are auto-converted to `fixupx.com` so videos and images embed properly.
 
-An X-native send bar appears when you hover a post on x.com (and stays visible on a post's own page): pick server + channel, choose ping presets, one click sends. Two transports:
+An X-native send control appears when you hover a post on x.com (always visible on a post's own page): one click sends to your saved channel, `▾` opens options. Two transports:
 
 - **Tab mode** *(default)* — a `discord.com` browser tab does the sending, driven like a human: navigate → paste → submit → back.
 - **App mode** — the Discord **desktop app** does the sending via a tiny Vencord plugin, with no browser tab open at all.
@@ -73,19 +73,17 @@ To undo everything: `node setup.mjs --uninstall` (removes the broker + autostart
 
 ## The send bar
 
-Hover a post on x.com to reveal its bar (styled to match X's light/dark theme; on a post's own page the bar is always visible):
+Hover a post on x.com to reveal a compact send control at the end of its action row (on a post's own page it stays visible). One click sends — the destination is on the button:
 
 ```
-[icon] Server ▾   #channel ▾   [mode]   @   Send
+[➤ #channel @2 | ▾]
 ```
 
-- **Hover-reveal** — bars stay out of the feed until you hover their post; the post you're actually viewing (permalink page) keeps its bar permanently.
-- **Server / Channel dropdowns** — themed popovers built from your recently visited channels (recorded by the Discord side). Selecting on one bar updates all bars. *"Open tab"* means "whatever channel is currently open on the sending side".
-- **Mode chip** — Tab mode (browser tab, chat-bubble icon) ↔ App mode (desktop app, desktop icon). Switching to App health-checks the broker first and refuses if it's not running.
-- **@ ping presets** — click `@` to open the preset manager: named presets (tabs), add users by Discord ID (paste several at once for bulk add), optional labels, remove via ✕, create presets with `＋ New preset` (inline name field, Enter or ✓ to confirm), delete a preset by right-clicking its tab twice (first click arms it, red). Right-click the `@` button itself to toggle pings on/off; the button shows a count badge. When ON, sends mention `<@id>` for every user in the active preset after the link. IDs are validated as 17–20 digit snowflakes.
-- **Send** — converts the post URL to fixupx, delivers, and shows a toast with the outcome and the exact path used (`via dom-nav`, `via app`, or the specific error). The button dims while its send is in flight.
+- **➤ #channel** — one-click send to your saved target (channel truncated to fit, `@N` badge when pings are on). Click → spinner → `✓ Sent` / `↻ Retry` right on the button; the toast carries the details. Your pick is remembered across posts; *"Open tab"* means "whatever channel is currently open on the sending side".
+- **▾** — opens the composer sheet for everything else: post preview + fixupx link, `[Server ▾] [#channel ▾]`, `[Tab|App] [@ Preset ▾] [Ping on/off] [Edit]`, `[Cancel] [Send to #channel]`.
+- **@ Preset / Edit** — click the preset name to switch; **Edit** opens the panel inline: click a chip to activate, double-click then click again to confirm delete, remove users via ✕, bulk-add by pasting IDs, create with `+ New preset`. No right-click gestures anywhere. When ping is ON, sends mention `<@id>` for every user in the active preset after the link. IDs are validated as 17–20 digit snowflakes.
 
-**Quick-send:** a floating **Discord** pill (bottom-right on X, theme-aware) sends the last post you hovered. Dismiss it with its ✕ (persisted); right-click any send bar's empty space to bring it back. Keyboard: **Alt+D** does the same as the pill.
+**Quick-send:** a floating **Discord** pill (bottom-right on X, theme-aware) sends the last post you hovered instantly to the saved target. Dismiss it with its ✕ (persisted); right-click any post's send button to bring it back. Keyboard: **Alt+D** quick-sends the same way.
 
 ## How it works
 
@@ -158,6 +156,9 @@ issues.md                              external audit history
 | 1.5–1.6.1 | **Ping presets**: popover manager, multi-preset tabs, bulk add, `<@id>` mentions; clean server names |
 | 1.7.0 | **App mode**: mode chip, local broker, Vencord `xdrRelay` plugin with nonce-verified delivery acks |
 | 1.8.0 | **UI pass**: hover-reveal bars, theme-aware dismissible quick-send pill, Alt+D quick-send, inline preset create/delete (no native dialogs), SVG mode chip, in-flight send guard, cross-tab ping-badge sync, `clientSend` payload parity fix (`invalidEmojis: []`, 4-arg `sendMessage`) |
+| 1.9.0 | **Composer rebuild**: per-post button + single composer sheet replaces bar-per-post; singleton stylesheet + CSS-var theming, MutationObserver injection, keyboard-navigable menus, visible preset editing (no right-click gestures). **Split-button**: one-click `➤ #channel` send with inline spinner/sent/retry states, `▾` chevron for options |
+| 1.9.1 | **Send-path latency**: nav sleeps (500+700ms) replaced with 50ms readiness polls (pathname → composer aria-label, nav-verify gate unchanged); Send-button click moved ahead of the dead synthetic Enter; all poll steps 50ms |
+| 1.9.2 | **App-mode latency**: broker long-polling (`GET /poll?wait`, `GET /ack/:id?wait`, claim/consume still atomic); plugin subscribes `MESSAGE_CREATE` before sending (fixes 5s-timeout race), `waitForChannelReady=false`, cached module refs, chained re-poll loop, explicit failure acks |
 
 ## License
 

@@ -6,8 +6,14 @@
  * MessageActions — same payload shape the userscript's internals path uses.
  *
  * Delivery honesty: sendMessage resolves on DISPATCH, not delivery. When
- * verifyDelivery is on, we wait for MESSAGE_CREATE with our nonce before
- * acking 'app-verified'; on timeout we ack 'app-unverified'.
+ * verifyDelivery is on, we wait for the nonce-matched MESSAGE_CREATE echo
+ * before acking 'app-verified' (first echo = dispatch + local echo, not a
+ * server receipt); on timeout we ack 'app-unverified'.
+ *
+ * Latency design: one permanent MESSAGE_CREATE listener with a nonce map
+ * (subscribed before sending — the echo can fire synchronously inside
+ * sendMessage), cached module refs, waitForChannelReady=false, and broker
+ * long-polling (GET /poll?wait=25000, chained re-poll) instead of 1 s polling.
  *
  * One-send invariant: a polled request is claimed exactly once by the broker
  * and is never redelivered; a failed send is ack'd as a failure — no retries.
@@ -102,89 +108,140 @@ async function post(path: string, body?: unknown): Promise<Response> {
     });
 }
 
-function waitForDelivery(channelId: string, nonce: string, timeoutMs: number): Promise<boolean> {
-    const { promise, resolve } = Promise.withResolvers<boolean>();
-    const d = getDispatcher();
-    if (!d) {
-        resolve(false);
-        return promise;
-    }
-
-    let settled = false;
-    const onMsg = (ev: unknown) => {
-        const info = deliveryInfo(ev);
-        if (info.channelId === channelId && info.nonce === nonce) {
-            if (!settled) {
-                settled = true;
-                d.unsubscribe("MESSAGE_CREATE", onMsg);
-                resolve(true);
+function awaitDelivery(channelId: string, nonce: string, timeoutMs: number): { promise: Promise<boolean>; cancel: () => void } {
+    ensureFluxListening();
+    if (!fluxListening) return { promise: Promise.resolve(false), cancel: () => { } };
+    let timer: ReturnType<typeof setTimeout>;
+    const promise = new Promise<boolean>(resolve => {
+        timer = setTimeout(() => {
+            if (pendingDelivery.delete(nonce)) resolve(false);
+        }, timeoutMs);
+        pendingDelivery.set(nonce, { channelId, resolve, timer });
+    });
+    return {
+        promise,
+        cancel: () => {
+            const w = pendingDelivery.get(nonce);
+            if (w) {
+                pendingDelivery.delete(nonce);
+                clearTimeout(w.timer);
+                w.resolve(false);
             }
         }
     };
-    try {
-        d.subscribe("MESSAGE_CREATE", onMsg);
-    } catch {
-        resolve(false);
-        return promise;
-    }
-    setTimeout(() => {
-        if (!settled) {
-            settled = true;
-            d.unsubscribe("MESSAGE_CREATE", onMsg);
-            resolve(false);
-        }
-    }, timeoutMs);
-    return promise;
 }
 
-async function handle(req: RelayRequest): Promise<void> {
-    const pingIds = Array.isArray(req.pingUsers)
-        ? req.pingUsers.filter(id => /^\d{17,20}$/.test(id))
-        : [];
-    let content = req.link;
-    if (pingIds.length) content += " " + pingIds.map(id => `<@${id}>`).join(" ");
+const pendingDelivery = new Map<string, { channelId: string; resolve: (v: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+let fluxListening = false;
 
-    const ack = (body: Record<string, unknown>) =>
-        post(`/ack/${req.id}`, body).catch(e => log("ack failed", String(e)));
+function onMessageCreate(ev: unknown) {
+    const info = deliveryInfo(ev);
+    if (!info.nonce) return;
+    const w = pendingDelivery.get(info.nonce);
+    if (w && w.channelId === info.channelId) {
+        pendingDelivery.delete(info.nonce);
+        clearTimeout(w.timer);
+        w.resolve(true);
+    }
+}
 
-    // "Open tab" parity: a request without ch targets whatever channel the
-    // app is currently viewing (same semantics as the browser-tab flow).
-    let targetCh = req.ch;
-    if (!targetCh) {
+function ensureFluxListening() {
+    if (fluxListening) return;
+    const d = getDispatcher();
+    if (!d) return;
+    try {
+        d.subscribe("MESSAGE_CREATE", onMessageCreate);
+        fluxListening = true;
+    } catch { /* retry on next send */ }
+}
+
+function dropFluxListening() {
+    if (!fluxListening) return;
+    try {
+        getDispatcher()?.unsubscribe("MESSAGE_CREATE", onMessageCreate);
+    } catch { /* ignore */ }
+    fluxListening = false;
+}
+
+type SendFn = (ch: string, payload: Record<string, unknown>, waitForChannel: boolean, options: Record<string, unknown>) => unknown;
+let cachedSend: SendFn | undefined;
+let cachedChannelId: (() => unknown) | undefined;
+
+function getSendMessage(): SendFn | undefined {
+    if (cachedSend) return cachedSend;
+    const found: unknown = findByProps("sendMessage", "editMessage");
+    const fn = found && typeof found === "object"
+        && "sendMessage" in found && typeof found.sendMessage === "function"
+        ? found.sendMessage as SendFn : undefined;
+    if (fn) cachedSend = fn;
+    return fn;
+}
+
+function getCurrentChannelId(): string | null {
+    if (!cachedChannelId) {
         const store: unknown = findByProps("getChannelId", "getVoiceChannelId");
         const getter = store && typeof store === "object" && "getChannelId" in store
             ? (store as Record<string, unknown>).getChannelId : undefined;
-        if (typeof getter === "function") {
-            try {
-                const id = (getter as () => unknown).call(store);
-                targetCh = typeof id === "string" && id.length > 0 ? id : null;
-            } catch { /* keep null */ }
-        }
-        if (!targetCh) throw new Error("no channel picked and none open in the app — click into a channel, or pick a specific one on X");
-        log("no ch in request — using app's current channel", targetCh);
+        if (typeof getter !== "function") return null;
+        cachedChannelId = () => (getter as () => unknown).call(store);
     }
+    try {
+        const id = cachedChannelId();
+        return typeof id === "string" && id.length > 0 ? id : null;
+    } catch {
+        cachedChannelId = undefined;
+        return null;
+    }
+}
+
+function dropModuleCache() {
+    cachedSend = undefined;
+    cachedChannelId = undefined;
+}
+
+async function handle(req: RelayRequest): Promise<void> {
+    const ack = (body: Record<string, unknown>) =>
+        post(`/ack/${req.id}`, body).catch(e => log("ack failed", String(e)));
 
     try {
-        // Vencord's findByProps is typed loosely; guard the one member we call.
-        const found: unknown = findByProps("sendMessage", "editMessage");
-        const sendMessage = found && typeof found === "object"
-            && "sendMessage" in found && typeof found.sendMessage === "function"
-            ? found.sendMessage as (ch: string, payload: Record<string, unknown>, waitForChannel: boolean, options: Record<string, unknown>) => unknown
-            : undefined;
+        const pingIds = Array.isArray(req.pingUsers)
+            ? req.pingUsers.filter(id => /^\d{17,20}$/.test(id))
+            : [];
+        let content = req.link;
+        if (pingIds.length) content += " " + pingIds.map(id => `<@${id}>`).join(" ");
+
+        // "Open tab" parity: a request without ch targets whatever channel the
+        // app is currently viewing (same semantics as the browser-tab flow).
+        let targetCh = req.ch;
+        if (!targetCh) {
+            targetCh = getCurrentChannelId();
+            if (!targetCh) throw new Error("no channel picked and none open in the app — click into a channel, or pick a specific one on X");
+            log("no ch in request — using app's current channel", targetCh);
+        }
+
+        const sendMessage = getSendMessage();
         if (!sendMessage) throw new Error("MessageActions not found");
 
         const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
         const payload = { content, tts: false, invalidEmojis: [], validNonShortcutEmojis: [], nonce };
 
-        const sendPromise = Promise.resolve(sendMessage(targetCh, payload, true, {}));
+        // Subscribe BEFORE sending: the optimistic MESSAGE_CREATE echo can
+        // fire synchronously inside sendMessage, and a post-send subscribe
+        // misses it (then every send burns the full 5 s timeout).
+        const waiter = settings.store.verifyDelivery ? awaitDelivery(targetCh, nonce, 5000) : null;
+        let sendErr: unknown = null;
+        try {
+            await Promise.resolve(sendMessage(targetCh, payload, false, {}));
+        } catch (e) {
+            sendErr = e;
+        }
+        if (sendErr) {
+            waiter?.cancel();
+            dropModuleCache();
+            throw sendErr;
+        }
 
-        // MESSAGE_CREATE arrives via the dispatcher regardless of the send
-        // promise's own resolution (which fires on dispatch, not delivery).
-        const verified = settings.store.verifyDelivery
-            ? await waitForDelivery(targetCh, nonce, 5000)
-            : false;
-
-        await sendPromise;
+        const verified = waiter ? await waiter.promise : false;
 
         log("sent", targetCh, verified ? "(verified)" : "(unverified)", content);
         await ack({
@@ -209,38 +266,68 @@ export default definePlugin({
     pollTimer: undefined as number | undefined,
     inFlight: false,
     cspWarned: false,
+    _stopLoop: undefined as (() => void) | undefined,
+    _pendingAbort: undefined as (() => void) | undefined,
 
     start() {
         log("active — broker:", settings.store.brokerUrl);
-        const tick = async () => {
-            if (this.inFlight) return;
-            this.inFlight = true;
-            try {
-                const res = await fetch(`${settings.store.brokerUrl}/poll`, { method: "GET" });
-                const data = await res.json() as { req: RelayRequest | null };
-                if (data?.req?.id && data.req.link) {
-                    await handle(data.req);
+        ensureFluxListening();
+        let stopped = false;
+        this._stopLoop = () => {
+            stopped = true;
+            try { this._pendingAbort?.(); } catch { /* ignore */ }
+        };
+        const backoffMs = () => Math.max(250, settings.store.pollInterval ?? 1000);
+        const sleep = (ms: number) => new Promise<void>(r => { this.pollTimer = window.setTimeout(r, ms); });
+        const loop = async () => {
+            while (!stopped) {
+                const t0 = Date.now();
+                try {
+                    const ctrl = new AbortController();
+                    this._pendingAbort = () => { try { ctrl.abort(); } catch { /* ignore */ } };
+                    const killer = setTimeout(() => { try { ctrl.abort(); } catch { /* ignore */ } }, 30000);
+                    let data: { req: RelayRequest | null } | null = null;
+                    try {
+                        const res = await fetch(`${settings.store.brokerUrl}/poll?wait=25000`, { method: "GET", signal: ctrl.signal });
+                        data = (await res.json()) as { req: RelayRequest | null };
+                    } catch (e) {
+                        // TypeError from fetch = CSP still blocking localhost
+                        if (e instanceof TypeError && !this.cspWarned) {
+                            this.cspWarned = true;
+                            console.error(
+                                "[xdrRelay] Cannot reach the broker (CSP?). Open Vencord Settings → Vencord →",
+                                "Custom CSP Rules and add:  connect-src = http://127.0.0.1 ws://127.0.0.1",
+                                "then fully restart Discord. Broker URL:", settings.store.brokerUrl
+                            );
+                        }
+                    } finally {
+                        clearTimeout(killer);
+                        this._pendingAbort = undefined;
+                    }
+                    if (!stopped && data?.req?.id && data.req.link) {
+                        this.inFlight = true;
+                        try {
+                            await handle(data.req);
+                        } finally {
+                            this.inFlight = false;
+                        }
+                    } else if (!stopped && Date.now() - t0 < 1000) {
+                        await sleep(backoffMs());
+                    }
+                } catch {
+                    if (!stopped) await sleep(backoffMs());
                 }
-            } catch (e) {
-                // TypeError from fetch = CSP still blocking localhost
-                if (e instanceof TypeError && !this.cspWarned) {
-                    this.cspWarned = true;
-                    console.error(
-                        "[xdrRelay] Cannot reach the broker (CSP?). Open Vencord Settings → Vencord →",
-                        "Custom CSP Rules and add:  connect-src = http://127.0.0.1 ws://127.0.0.1",
-                        "then fully restart Discord. Broker URL:", settings.store.brokerUrl
-                    );
-                }
-            } finally {
-                this.inFlight = false;
             }
         };
-        this.pollTimer = window.setInterval(tick, Math.max(250, settings.store.pollInterval ?? 1000));
+        loop();
     },
 
     stop() {
-        if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
+        try { this._stopLoop?.(); } catch { /* ignore */ }
+        this._stopLoop = undefined;
+        if (this.pollTimer !== undefined) window.clearTimeout(this.pollTimer);
         this.pollTimer = undefined;
+        dropFluxListening();
         log("stopped");
     }
 });

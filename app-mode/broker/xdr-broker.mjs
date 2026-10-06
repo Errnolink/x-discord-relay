@@ -25,6 +25,45 @@ const ACK_TTL = 60000;   // ack pickup window
 let pending = null;      // {req, ts, claimed}
 const acks = new Map();  // id -> {body, ts, consumed}
 
+// Long-poll waiters. /poll parks at most a couple of plugin pollers;
+// /ack/:id parks X-side ack waits keyed by request id. Claim/consume stays
+// atomic: the waiter is answered and flagged in the same tick.
+const pollWaiters = new Set(); // {res, timer}
+const ackWaiters = new Map();  // id -> Set({res, timer})
+
+function unpark(set, w) {
+  set.delete(w);
+  clearTimeout(w.timer);
+}
+function parkPoll(res, ms, onTimeout) {
+  const w = { res, timer: 0 };
+  w.timer = setTimeout(() => {
+    pollWaiters.delete(w);
+    onTimeout();
+  }, ms);
+  if (w.timer.unref) w.timer.unref();
+  pollWaiters.add(w);
+  return w;
+}
+function parkAck(id, res, ms) {
+  let set = ackWaiters.get(id);
+  if (!set) { set = new Set(); ackWaiters.set(id, set); }
+  const w = { res, timer: 0 };
+  w.timer = setTimeout(() => {
+    set.delete(w);
+    if (!set.size) ackWaiters.delete(id);
+    json(res, 200, { pending: true });
+  }, ms);
+  if (w.timer.unref) w.timer.unref();
+  set.add(w);
+  return w;
+}
+function waitMs(url, cap) {
+  const n = Number(url.searchParams.get('wait'));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.floor(n), cap || 30000);
+}
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -64,6 +103,13 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { ok: false, err: 'bad request shape (need string id + link)' }); return;
       }
       pending = { req: body, ts: Date.now(), claimed: false };
+      if (pollWaiters.size) {
+        const first = pollWaiters.values().next().value;
+        unpark(pollWaiters, first);
+        pending.claimed = true;
+        json(first.res, 200, { req: pending.req });
+        for (const o of [...pollWaiters]) { unpark(pollWaiters, o); json(o.res, 200, { req: null }); }
+      }
       json(res, 200, { ok: true }); return;
     }
 
@@ -71,6 +117,13 @@ const server = http.createServer(async (req, res) => {
       if (pending && !pending.claimed && Date.now() - pending.ts < REQ_TTL) {
         pending.claimed = true;
         json(res, 200, { req: pending.req });
+      } else if (waitMs(url) > 0) {
+        if (pending && Date.now() - pending.ts >= REQ_TTL) pending = null;
+        const w = parkPoll(res, waitMs(url), () => {
+          if (pending && Date.now() - pending.ts >= REQ_TTL) pending = null;
+          json(res, 200, { req: null });
+        });
+        req.on('close', () => { if (pollWaiters.has(w)) unpark(pollWaiters, w); });
       } else {
         pending = null;
         json(res, 200, { req: null });
@@ -84,11 +137,25 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST') {
         const body = await readBody(req);
         acks.set(id, { body, ts: Date.now(), consumed: false });
+        const set = ackWaiters.get(id);
+        if (set && set.size) {
+          ackWaiters.delete(id);
+          for (const w of set) { clearTimeout(w.timer); json(w.res, 200, body); }
+          acks.get(id).consumed = true;
+        }
         json(res, 200, { ok: true }); return;
       }
       if (req.method === 'GET') {
         const a = acks.get(id);
         if (a && !a.consumed && Date.now() - a.ts < ACK_TTL) { a.consumed = true; json(res, 200, a.body); return; }
+        if (waitMs(url) > 0) {
+          const w = parkAck(id, res, waitMs(url));
+          req.on('close', () => {
+            const s = ackWaiters.get(id);
+            if (s && s.has(w)) { unpark(s, w); if (!s.size) ackWaiters.delete(id); }
+          });
+          return;
+        }
         res.writeHead(204, CORS); res.end(); return;
       }
     }
@@ -105,6 +172,9 @@ setInterval(() => {
   for (const [id, a] of acks) if (now - a.ts > ACK_TTL + 5000) acks.delete(id);
 }, 30000).unref();
 
+server.timeout = 35000;
+server.keepAliveTimeout = 35000;
+server.headersTimeout = 60000;
 server.listen(PORT, HOST, () => {
   console.log(`[xdr-broker] listening on http://${HOST}:${PORT} (${randomUUID().slice(0, 8)})`);
 });
